@@ -34,4 +34,7 @@ namespace Fmt {
     //         1  2  3  4  5
     //  ...        [today marked]
     std::string calendarGrid(time_t now);
+
+    // full-year grid: 12 mini month calendars in 3 columns, today marked.
+    std::string calendarYear(time_t now);
 }

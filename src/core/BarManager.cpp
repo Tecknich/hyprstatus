@@ -5,6 +5,7 @@
 #include <sstream>
 
 #include <hyprland/src/Compositor.hpp>
+#include <hyprland/src/desktop/view/Window.hpp>
 #include <hyprland/src/desktop/reserved/ReservedArea.hpp>
 #include <hyprland/src/desktop/state/FocusState.hpp>
 #include <hyprland/src/helpers/Monitor.hpp>
@@ -96,6 +97,15 @@ void CBarManager::init() {
         g_reservedLater = g_pEventLoopManager->doLaterLock([this] { applyReservedAll(); });
     });
 
+    // a window entering/leaving fullscreen must repaint the strip so the bar
+    // hides or reappears (see hide_on_fullscreen gating in onRenderStage).
+    m_lFullscreen = events.window.fullscreen.listen([this](PHLWINDOW w) {
+        if (!w)
+            return;
+        if (const auto MON = w->m_monitor.lock())
+            g_pHyprRenderer->damageMonitor(MON);
+    });
+
     m_lCfgPreReload = events.config.preReload.listen([] { ModuleConfigStore::clear(); });
 
     m_lCfgReloaded = events.config.reloaded.listen([this] {
@@ -151,6 +161,7 @@ void CBarManager::shutdown() {
     m_lMonAdded.reset();
     m_lMonRemoved.reset();
     m_lMonLayout.reset();
+    m_lFullscreen.reset();
     m_lCfgPreReload.reset();
     m_lCfgReloaded.reset();
     m_lMouseButton.reset();
@@ -280,6 +291,13 @@ void CBarManager::onRenderStage(eRenderStage stage) {
         if (!PMONITOR || !barForMonitor(PMONITOR))
             return;
 
+        // Hide over fullscreen. The compositor only skips this stage for a
+        // *solitary* fullscreen window (one opaque client covering everything);
+        // a fullscreen window with any other surface still emits the stage, so
+        // check the monitor's fullscreen mode explicitly.
+        if (g_cfg.hideOnFullscreen->value() && PMONITOR->inFullscreenMode())
+            return;
+
         g_pHyprRenderer->m_renderPass.add(makeUnique<CBarPassElement>(PMONITOR));
         return;
     }
@@ -297,6 +315,10 @@ void CBarManager::onRenderStage(eRenderStage stage) {
 
     const auto PMONITOR = g_pHyprRenderer->m_renderData.pMonitor.lock();
     if (!PMONITOR)
+        return;
+
+    // no tooltip while the bar is hidden over fullscreen
+    if (g_cfg.hideOnFullscreen->value() && PMONITOR->inFullscreenMode())
         return;
 
     auto* const BAR = barForMonitor(PMONITOR);
@@ -493,8 +515,15 @@ void CBarManager::refreshModule(const std::string& name) {
 }
 
 void CBarManager::requestRedraw() {
-    for (auto& [id, bar] : m_bars)
+    const bool     TIPS = g_cfg.tooltips->value();
+    const uint64_t NOW  = Time::millis(Time::steadyNow());
+    for (auto& [id, bar] : m_bars) {
         bar->damage();
+        // a hovered module whose data (or tooltip mode) just changed must also
+        // repaint its tooltip, which lives outside the bar box.
+        if (TIPS && bar->m_hoveredIdx != -1 && NOW - bar->m_hoverStartMs >= (uint64_t)g_cfg.tooltipDelayMs->value())
+            damageTooltipBand(bar.get());
+    }
 }
 
 std::string CBarManager::statusJson() const {

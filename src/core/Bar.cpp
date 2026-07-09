@@ -221,9 +221,25 @@ void CBar::draw() {
     auto center = measureGroup(g_barManager->m_layout.center);
     auto right  = measureGroup(g_barManager->m_layout.right);
 
+    const double LEFTW   = groupWidth(left);
+    const double RIGHTW  = groupWidth(right);
+    const double CENTERW = groupWidth(center);
+
     place(left, SPACING);
-    place(center, (BARLOCAL.w - groupWidth(center)) / 2.0); // may overlap side groups; acceptable v1
-    place(right, BARLOCAL.w - SPACING - groupWidth(right));
+    place(right, BARLOCAL.w - SPACING - RIGHTW);
+
+    // Center on the bar middle, but clamp into the gap between the left and
+    // right groups so the center never overlaps them (a long now-playing title
+    // used to bleed over the right modules). When the gap is too narrow the
+    // center is pinned to the gap's left edge and clipped by the scissor below.
+    const double GAPSTART = SPACING + LEFTW + SPACING;
+    const double GAPEND   = BARLOCAL.w - SPACING - RIGHTW - SPACING;
+    double       centerX  = (BARLOCAL.w - CENTERW) / 2.0;
+    if (centerX + CENTERW > GAPEND)
+        centerX = GAPEND - CENTERW;
+    if (centerX < GAPSTART)
+        centerX = GAPSTART;
+    place(center, centerX);
 
     // ---- draw segments + record hit regions ----
 
@@ -254,9 +270,24 @@ void CBar::draw() {
         }
     };
 
+    // draw order must stay left -> center -> right so the hit regions line up
+    // with the regionIdx assigned during measurement (hover highlight mapping).
     drawGroup(left);
-    drawGroup(center);
+
+    // clip the center group to the gap so an over-long center title is cut off
+    // at the side groups instead of overlapping them.
+    const double CLIPX0 = std::clamp(GAPSTART, 0.0, BARLOCAL.w);
+    const double CLIPX1 = std::clamp(GAPEND, 0.0, BARLOCAL.w);
+    if (CLIPX1 > CLIPX0) {
+        const CBox CLIP = CBox{BARLOCAL.x + CLIPX0, BARLOCAL.y, CLIPX1 - CLIPX0, BARLOCAL.h}.scale(SCALE).round();
+        g_pHyprOpenGL->scissor(CLIP);
+        drawGroup(center);
+        g_pHyprOpenGL->scissor(PIXBAR); // restore to the bar box for the right group
+    } else
+        drawGroup(center); // degenerate gap: draw unclipped so it stays clickable
+
     drawGroup(right);
+    g_pHyprOpenGL->scissor(nullptr);
 
     // A relayout under a stationary cursor (a module widened, segments shifted)
     // moves segments out from under the index onMouseMove recorded, so the stale

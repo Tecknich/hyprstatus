@@ -20,6 +20,7 @@ struct SGlobalConfig {
     SP<Config::Values::CIntValue>    rounding;
     SP<Config::Values::CIntValue>    borderSize;
     SP<Config::Values::CBoolValue>   blur;
+    SP<Config::Values::CBoolValue>   hideOnFullscreen;
     SP<Config::Values::CBoolValue>   tooltips;
     SP<Config::Values::CIntValue>    tooltipDelayMs;
     SP<Config::Values::CStringValue> fontFamily;

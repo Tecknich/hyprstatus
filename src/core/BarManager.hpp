@@ -69,5 +69,5 @@ class CBarManager {
 
     // listeners (dropping = unsubscribing)
     CHyprSignalListener m_lRenderStage, m_lMonAdded, m_lMonRemoved, m_lMonLayout,
-        m_lCfgPreReload, m_lCfgReloaded, m_lMouseButton, m_lMouseAxis, m_lMouseMove;
+        m_lCfgPreReload, m_lCfgReloaded, m_lMouseButton, m_lMouseAxis, m_lMouseMove, m_lFullscreen;
 };

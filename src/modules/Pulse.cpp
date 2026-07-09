@@ -258,7 +258,10 @@ namespace {
             SSegment seg;
             seg.text = fmt;
             seg.cls  = cls;
-            if (auto tip = opt("tooltip-format"); !tip.empty()) {
+            if (optBool("tooltip", true)) {
+                // default tooltip = sink description + volume, so hover is useful
+                // without any config (matches the other meter modules)
+                auto tip = opt("tooltip-format", muted ? "{desc}\nmuted" : "{desc}\nvolume {volume}%");
                 Hyprutils::String::replaceInString(tip, "{icon}", ICON);
                 Hyprutils::String::replaceInString(tip, "{volume}", VOL);
                 Hyprutils::String::replaceInString(tip, "{desc}", desc);
