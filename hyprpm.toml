@@ -1,0 +1,12 @@
+[repository]
+name = "hyprstatus"
+authors = ["Tecknich"]
+
+[hyprstatus]
+description = "Compositor-rendered status bar for Hyprland — a Waybar replacement that lives inside the compositor"
+authors = ["Tecknich"]
+output = "build/hyprstatus.so"
+build = [
+    "cmake --no-warn-unused-cli -DCMAKE_BUILD_TYPE=Release -B build -S .",
+    "cmake --build build --parallel",
+]
