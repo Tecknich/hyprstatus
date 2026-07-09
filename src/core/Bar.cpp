@@ -15,6 +15,7 @@
 #include <unordered_map>
 
 #include "../globals.hpp"
+#include "../render/Markup.hpp"
 #include "../render/TextCache.hpp"
 #include "BarManager.hpp"
 
@@ -364,7 +365,14 @@ void CBar::drawTooltip() {
     const float SCALE  = MON->m_scale;
     const int   FONTPX = (int)std::round(g_cfg.fontSize->value() * SCALE);
 
-    const auto TEX = TextCache::get(TEXT, cfgColor(g_cfg.colTooltipFg), FONTPX, false, (int)std::round(600.0 * SCALE));
+    // Markup tooltips (the clock's colored calendar) carry their own per-span
+    // colors, so they go through the cairo+pango path and are drawn untinted.
+    // Plain tooltips keep the single-color TextCache path with word wrapping.
+    SP<Render::ITexture> TEX;
+    if (REGION.module->tooltipIsMarkup())
+        TEX = MarkupText::get(TEXT, FONTPX, g_cfg.fontFamily ? g_cfg.fontFamily->value() : std::string{"monospace"});
+    else
+        TEX = TextCache::get(TEXT, cfgColor(g_cfg.colTooltipFg), FONTPX, false, (int)std::round(600.0 * SCALE));
     if (!TEX || TEX->m_texID == 0)
         return;
 

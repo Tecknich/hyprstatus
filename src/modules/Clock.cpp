@@ -2,12 +2,26 @@
 
 #include <linux/input-event-codes.h>
 
+#include <algorithm>
 #include <chrono>
+#include <cmath>
+#include <cstdio>
 #include <ctime>
 #include <optional>
 #include <string>
 
+#include "../globals.hpp"
 #include "../util/Format.hpp"
+
+namespace {
+    // CHyprColor channels are 0..1; emit "#RRGGBB" for Pango markup.
+    std::string colorHex(const CHyprColor& c) {
+        const auto TO255 = [](double v) { return (int)std::lround(std::clamp(v, 0.0, 1.0) * 255.0); };
+        char       buf[8];
+        std::snprintf(buf, sizeof(buf), "#%02X%02X%02X", TO255(c.r), TO255(c.g), TO255(c.b));
+        return buf;
+    }
+}
 
 namespace {
     class CClockModule : public IModule {
@@ -41,18 +55,31 @@ namespace {
                 return "";
             auto fmt = !seg.tooltip.empty() ? seg.tooltip : opt("tooltip-format", "{calendar}");
 
+            // Calendar colors, pulled live from config as "#RRGGBB": accent =
+            // title + today highlight, tooltip-fg = header/days, accent-dim =
+            // week numbers.
+            const std::string ACCENT = colorHex(cfgColor(g_cfg.colAccent));
+            const std::string FG     = colorHex(cfgColor(g_cfg.colTooltipFg));
+            const std::string DIM    = colorHex(cfgColor(g_cfg.colAccentDim));
+
             static const std::string TOKEN = "{calendar}";
             if (fmt.find(TOKEN) != std::string::npos) {
                 // right-click while hovering toggles the month grid to a full year
-                const auto CAL = m_yearView ? Fmt::calendarYear(::time(nullptr)) : Fmt::calendarGrid(::time(nullptr));
+                const auto CAL = m_yearView ? Fmt::calendarYear(::time(nullptr), ACCENT, FG, DIM)
+                                            : Fmt::calendarGrid(::time(nullptr), ACCENT, FG, DIM);
                 size_t     pos = 0;
                 while ((pos = fmt.find(TOKEN, pos)) != std::string::npos) {
                     fmt.replace(pos, TOKEN.size(), CAL);
                     pos += CAL.size();
                 }
             }
-            return Fmt::stripPango(fmt);
+            // returned as Pango markup (rendered via the markup path in Bar);
+            // no longer stripped
+            return fmt;
         }
+
+        // the calendar tooltip is colored Pango markup
+        bool tooltipIsMarkup() const override { return true; }
 
         void onClick(uint32_t button, const SSegment& seg, PHLMONITOR mon) override {
             // right-click over the clock expands the calendar tooltip to a full

@@ -62,6 +62,14 @@ class CBarManager {
     // first module (if any) with an open native popup menu
     IModule* moduleWithPopup();
 
+    // Pointer-cursor feedback over clickable bar segments. POINTER/DEFAULT are
+    // only ever set while the cursor is over a bar (or an open popup); NONE
+    // means "off all bars" and never touches the cursor — the compositor owns
+    // it there. Transitions call setCursorFromName only on a state change.
+    enum eCursorState { CURSOR_NONE, CURSOR_POINTER, CURSOR_DEFAULT };
+    void         applyCursor(eCursorState want);
+    eCursorState m_cursorState = CURSOR_NONE;
+
     bool m_runtimeVisible = true;
     bool m_built          = false;
 

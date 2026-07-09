@@ -28,13 +28,21 @@ namespace Fmt {
 
     std::vector<std::string> split(const std::string& s, char sep);
 
-    // month calendar grid for the clock tooltip, e.g.
-    //      July 2026
-    //  Mo Tu We Th Fr Sa Su
-    //         1  2  3  4  5
-    //  ...        [today marked]
-    std::string calendarGrid(time_t now);
+    // Month calendar grid for the clock tooltip, emitted as PANGO MARKUP (the
+    // caller must render it via the markup path, not plain text). Waybar look:
+    // Sunday-first weekday header, days right-aligned width 2, an ISO-8601 week
+    // number "Wnn" column at the end of each week, an accent+bold month/year
+    // title, and today drawn with an accent background span. Colors are supplied
+    // as "#RRGGBB" hex strings (accent = title + today highlight, fg = header +
+    // days, dim = week numbers). e.g.
+    //   July 2026
+    //   Su Mo Tu We Th Fr Sa
+    //             1  2  3  4  W26
+    //    5  6  7  8 [9]10 11  W27
+    std::string calendarGrid(time_t now, const std::string& accentHex, const std::string& fgHex, const std::string& dimHex);
 
-    // full-year grid: 12 mini month calendars in 3 columns, today marked.
-    std::string calendarYear(time_t now);
+    // Full-year markup grid: 12 mini month calendars, 3 per row across 4 rows,
+    // each with its own title, weekday header and ISO week-number column, today
+    // highlighted. Same color convention as calendarGrid.
+    std::string calendarYear(time_t now, const std::string& accentHex, const std::string& fgHex, const std::string& dimHex);
 }
