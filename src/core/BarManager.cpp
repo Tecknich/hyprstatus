@@ -20,6 +20,7 @@
 #include "../config/ModuleConfig.hpp"
 #include "../modules/Factories.hpp"
 #include "../render/BarPassElement.hpp"
+#include "../render/Markup.hpp"
 #include "../render/TextCache.hpp"
 #include "../services/Signals.hpp"
 #include "../util/Json.hpp"
@@ -150,6 +151,10 @@ IModule* CBarManager::moduleWithPopup() {
 }
 
 void CBarManager::shutdown() {
+    // don't leave a stuck "pointer" cursor if we were showing one over the bar
+    if (m_cursorState == CURSOR_POINTER)
+        g_pHyprRenderer->setCursorFromName("left_ptr");
+
     m_layout = {};
     // close any open popup before tearing its owning module down
     if (auto* const POPMOD = moduleWithPopup())
@@ -192,6 +197,7 @@ void CBarManager::rebuild() {
     m_modules.clear();
     RtSignals::unsubscribeAll();
     TextCache::clear();
+    MarkupText::clear(); // colors may have changed on reload; drop cached calendars
 
     // same name in two groups reuses the one instance; nullptr = unknown
     // (notified once), skipped everywhere it appears.
@@ -490,11 +496,26 @@ void CBarManager::onMouseAxis(const IPointer::SAxisEvent& e, Event::SCallbackInf
         region.module->onScroll(e.delta, region.segment, PMONITOR);
 }
 
+// Set the compositor cursor for a hover state, only on an actual change (the
+// compositor sets "left_ptr" itself just once on entering empty space, so a
+// per-move re-set would fight it). NONE (off all bars) never touches the
+// cursor: the compositor manages it over windows / empty space.
+void CBarManager::applyCursor(eCursorState want) {
+    if (want == m_cursorState)
+        return;
+    if (want == CURSOR_POINTER)
+        g_pHyprRenderer->setCursorFromName("pointer");
+    else if (want == CURSOR_DEFAULT)
+        g_pHyprRenderer->setCursorFromName("left_ptr");
+    m_cursorState = want;
+}
+
 void CBarManager::onMouseMove(const Vector2D& pos) {
     // While a popup menu is open it owns hover feedback; the module damages its
     // popup monitor when the highlighted entry changes. Suppress bar hover.
     if (auto* const POPMOD = moduleWithPopup()) {
         POPMOD->popupHandleMotion(pos);
+        applyCursor(CURSOR_POINTER); // best-effort: the popup area is interactive
         return;
     }
 
@@ -505,6 +526,23 @@ void CBarManager::onMouseMove(const Vector2D& pos) {
         if ((newBar = barAt(m_bars, pos)))
             newBar->hitTest(pos, &newIdx);
     }
+
+    // Pointer-cursor feedback. Computed BEFORE newBar is collapsed to null for
+    // the no-segment case below, so hovering bar *background* still counts as
+    // "over the bar" (DEFAULT), distinct from "off all bars" (NONE).
+    {
+        eCursorState want = CURSOR_NONE;
+        if (newBar) {
+            bool isClickable = false;
+            if (newIdx >= 0 && (size_t)newIdx < newBar->m_hitRegions.size()) {
+                const auto& R = newBar->m_hitRegions[newIdx];
+                isClickable   = R.module && R.module->clickable(R.segment);
+            }
+            want = isClickable ? CURSOR_POINTER : CURSOR_DEFAULT;
+        }
+        applyCursor(want);
+    }
+
     if (newIdx == -1)
         newBar = nullptr; // over bar background but no module segment = no hover
 

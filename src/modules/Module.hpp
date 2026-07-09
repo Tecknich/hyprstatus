@@ -42,6 +42,17 @@ class IModule {
     // Tooltip text for a segment; "" = no tooltip. Default resolves the
     // segment tooltip, then the "tooltip-format"/"tooltip" options.
     virtual std::string tooltip(const SSegment& seg);
+    // When true, the string returned by tooltip() is Pango markup (colored
+    // spans, per-cell background) and is rendered via the markup path instead
+    // of plain single-color text. Used by the clock's calendar.
+    virtual bool tooltipIsMarkup() const { return false; }
+
+    // Whether hovering this segment should show a "clickable" (pointer) cursor.
+    // Default: true if any on-click* action is configured. Interactive modules
+    // (tray items with menus, notifications, ...) override to true.
+    virtual bool clickable(const SSegment& seg) const {
+        return hasOpt("on-click") || hasOpt("on-click-right") || hasOpt("on-click-middle");
+    }
 
     // Input. Defaults spawn the on-click*/on-scroll-* option commands.
     virtual void onClick(uint32_t button, const SSegment& seg, PHLMONITOR mon);

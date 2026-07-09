@@ -414,6 +414,9 @@ namespace {
             return m_items.empty();
         }
 
+        // every tray item is clickable (Activate / ContextMenu / native menu)
+        bool clickable(const SSegment&) const override { return true; }
+
         void onClick(uint32_t button, const SSegment& seg, PHLMONITOR mon) override {
             if (!m_bus || seg.id >= m_items.size())
                 return;

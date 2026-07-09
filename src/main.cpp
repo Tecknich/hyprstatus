@@ -6,6 +6,7 @@
 
 #include "config/ModuleConfig.hpp"
 #include "core/BarManager.hpp"
+#include "render/Markup.hpp"
 #include "render/TextCache.hpp"
 #include "services/DBus.hpp"
 #include "services/MainThread.hpp"
@@ -116,5 +117,6 @@ APICALL EXPORT void PLUGIN_EXIT() {
     DBus::shutdown();
     MainThread::shutdown();
     TextCache::clear();
+    MarkupText::clear();
     g_ctlCommand.reset();
 }

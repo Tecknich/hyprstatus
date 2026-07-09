@@ -31,6 +31,8 @@ namespace {
         std::vector<SSegment> segments(PHLMONITOR mon) override;
         bool                  hidden(PHLMONITOR mon) override;
         void                  onClick(uint32_t button, const SSegment& seg, PHLMONITOR mon) override;
+        // the bell always acts on click (open control center / toggle DND / clear)
+        bool clickable(const SSegment&) const override { return true; }
 
       private:
         void addMatches(sd_bus* bus); // (re)install both Subscribe matches on the given bus
@@ -191,12 +193,13 @@ namespace {
             {"count", std::to_string(m_count)},
         };
 
-        const std::string DEF_TIP = m_dnd ? "Do Not Disturb" : (std::to_string(m_count) + " notifications");
-
         SSegment seg;
-        seg.text    = Fmt::replaceTokens(opt("format", "{icon} {text}"), TOKENS);
-        seg.cls     = m_count > 0 ? "notification" : ""; // color.notification override
-        seg.tooltip = Fmt::replaceTokens(opt("tooltip-format", DEF_TIP), TOKENS);
+        seg.text = Fmt::replaceTokens(opt("format", "{icon} {text}"), TOKENS);
+        seg.cls  = m_count > 0 ? "notification" : ""; // color.notification override
+        // No tooltip by default: only when the user explicitly set one AND
+        // tooltips are enabled. (Previously always showed a count/DND string.)
+        if (optBool("tooltip", true) && hasOpt("tooltip-format"))
+            seg.tooltip = Fmt::replaceTokens(opt("tooltip-format"), TOKENS);
         return {seg};
     }
 

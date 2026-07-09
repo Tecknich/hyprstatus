@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <cstdio>
+#include <cstdlib>
 #include <ctime>
 #include <string_view>
 
@@ -217,81 +218,53 @@ namespace Fmt {
         return out;
     }
 
-    std::string calendarGrid(time_t now) {
-        struct tm tmNow{};
-        localtime_r(&now, &tmNow);
-
-        struct tm first = tmNow;
-        first.tm_mday   = 1;
-        first.tm_hour   = 12; // keep DST shifts from moving the date
-        first.tm_min    = 0;
-        first.tm_sec    = 0;
-        first.tm_isdst  = -1;
-        mktime(&first); // normalizes tm_wday
-
-        const int MONCOL = (first.tm_wday + 6) % 7; // Monday-first column of day 1
-
-        static const int DAYS[12]    = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
-        const int        YEAR        = tmNow.tm_year + 1900;
-        int              daysInMonth = DAYS[tmNow.tm_mon];
-        if (tmNow.tm_mon == 1 && YEAR % 4 == 0 && (YEAR % 100 != 0 || YEAR % 400 == 0))
-            daysInMonth = 29;
-
-        char title[64];
-        strftime(title, sizeof(title), "%B %Y", &tmNow);
-
-        std::string out = "   ";
-        out += title;
-        out += "\nMo Tu We Th Fr Sa Su";
-
-        std::string row(21, ' ');
-        size_t      rowOffset  = 0; // 1 after an in-row insert (today = 2-digit Monday)
-        bool        rowHasDays = false;
-
-        const auto FLUSHROW = [&]() {
-            if (!rowHasDays)
-                return;
-            const size_t END = row.find_last_not_of(' ');
-            out += '\n';
-            out += row.substr(0, END == std::string::npos ? 0 : END + 1);
-            row.assign(21, ' ');
-            rowOffset  = 0;
-            rowHasDays = false;
-        };
-
-        for (int day = 1; day <= daysInMonth; day++) {
-            const int    CELL = (MONCOL + day - 1) % 7;
-            const size_t POS  = static_cast<size_t>(CELL) * 3 + rowOffset;
-            char         buf[4];
-            std::snprintf(buf, sizeof(buf), "%2d", day);
-            row[POS]     = buf[0];
-            row[POS + 1] = buf[1];
-            if (day == tmNow.tm_mday) {
-                if (day < 10) { // " 8 " -> "[8]"
-                    row[POS]     = '[';
-                    row[POS + 2] = ']';
-                } else if (POS > 0) { // steal the previous cell's trailing space
-                    row[POS - 1] = '[';
-                    row[POS + 2] = ']';
-                } else { // 2-digit day in column 0: grow the row by one
-                    row.insert(POS, "[");
-                    row[POS + 3] = ']';
-                    rowOffset    = 1;
+    namespace {
+        // Escape the three Pango-markup metacharacters. Our calendar text is
+        // digits/spaces/letters, but strftime month names come from the locale,
+        // so the title is escaped defensively.
+        std::string esc(const std::string& s) {
+            std::string o;
+            o.reserve(s.size());
+            for (const char C : s) {
+                switch (C) {
+                    case '&': o += "&amp;"; break;
+                    case '<': o += "&lt;"; break;
+                    case '>': o += "&gt;"; break;
+                    default: o += C; break;
                 }
             }
-            rowHasDays = true;
-            if (CELL == 6)
-                FLUSHROW();
+            return o;
         }
-        FLUSHROW();
-        return out; // no trailing newline
-    }
 
-    namespace {
-        // one month rendered as fixed 8 lines x 20 cols (title, weekday header,
-        // 6 week rows) so months tile cleanly into columns. todayMday > 0 marks
-        // that day with [ ].
-        std::array<std::string, 8> monthBlock(int year, int mon0, int todayMday) {
+        // ISO-8601 week number of a date (year, 0-based month, 1-based day; the
+        // day may be out of range — mktime normalizes into an adjacent month).
+        // strftime %V is the ISO-8601 week: weeks run Monday..Sunday and week 1
+        // is the week containing the year's first Thursday. mktime sets tm_wday
+        // and tm_yday, which %V needs.
+        int isoWeek(int year, int mon0, int mday) {
+            struct tm t{};
+            t.tm_year  = year - 1900;
+            t.tm_mon   = mon0;
+            t.tm_mday  = mday;
+            t.tm_hour  = 12; // avoid DST edges shifting the date
+            t.tm_isdst = -1;
+            mktime(&t);
+            char buf[8];
+            strftime(buf, sizeof(buf), "%V", &t);
+            return std::atoi(buf);
+        }
+
+        static const int MONTH_DAYS[12] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
+
+        int daysInMonth(int year, int mon0) {
+            int d = MONTH_DAYS[mon0];
+            if (mon0 == 1 && year % 4 == 0 && (year % 100 != 0 || year % 400 == 0))
+                d = 29;
+            return d;
+        }
+
+        // Sunday-first column (0=Su .. 6=Sa) of the 1st of month, == tm_wday.
+        int firstDayColumn(int year, int mon0) {
             struct tm first{};
             first.tm_year  = year - 1900;
             first.tm_mon   = mon0;
@@ -299,70 +272,144 @@ namespace Fmt {
             first.tm_hour  = 12;
             first.tm_isdst = -1;
             mktime(&first);
+            return first.tm_wday;
+        }
 
-            const int MONCOL = (first.tm_wday + 6) % 7;
+        // One markup week-row line: 7 day cells (2 chars, single-space separated
+        // = 20 visible cols) + "  Wnn" (5 cols) = 25 visible cols exactly. Spans
+        // add no visible width, so monospace columns stay aligned. `today` (-1 to
+        // disable) gets an accent-background highlight. `weekMday` is the 1-based
+        // day-of-month of that row's Thursday (may be <1 or >dim; normalized).
+        std::string weekRow(int year, int mon0, int r, int sunCol, int dim, int today, const std::string& accentHex, const std::string& dimHex) {
+            std::string line;
+            for (int c = 0; c < 7; c++) {
+                if (c)
+                    line += ' ';
+                const int DAYNUM = r * 7 + c - sunCol + 1;
+                if (DAYNUM < 1 || DAYNUM > dim) {
+                    line += "  ";
+                    continue;
+                }
+                char cell[4];
+                std::snprintf(cell, sizeof(cell), "%2d", DAYNUM);
+                if (DAYNUM == today) {
+                    line += "<span background='" + accentHex + "' foreground='#101010'><b>";
+                    line += cell; // still 2 visible chars; span carries no width
+                    line += "</b></span>";
+                } else
+                    line += cell;
+            }
+            const int  THU_MDAY = r * 7 - sunCol + 5; // Thursday is Sunday-first column 4
+            const int  WK       = isoWeek(year, mon0, THU_MDAY);
+            char       wbuf[8];
+            std::snprintf(wbuf, sizeof(wbuf), "W%02d", WK);
+            line += "  <span foreground='" + dimHex + "'>";
+            line += wbuf;
+            line += "</span>";
+            return line;
+        }
+    }
 
-            static const int DAYS[12] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
-            int              dim      = DAYS[mon0];
-            if (mon0 == 1 && year % 4 == 0 && (year % 100 != 0 || year % 400 == 0))
-                dim = 29;
+    std::string calendarGrid(time_t now, const std::string& accentHex, const std::string& fgHex, const std::string& dimHex) {
+        struct tm tmNow{};
+        localtime_r(&now, &tmNow);
 
-            char name[16];
-            strftime(name, sizeof(name), "%B", &first);
+        const int YEAR   = tmNow.tm_year + 1900;
+        const int MON0   = tmNow.tm_mon;
+        const int TODAY  = tmNow.tm_mday;
+        const int SUNCOL = firstDayColumn(YEAR, MON0);
+        const int DIM    = daysInMonth(YEAR, MON0);
+
+        char title[64];
+        strftime(title, sizeof(title), "%B %Y", &tmNow);
+
+        // whole grid wrapped in one FG span; title/weeknum/today override it.
+        std::string out = "<span foreground='" + fgHex + "'>";
+        out += "<span foreground='" + accentHex + "'><b>" + esc(title) + "</b></span>\n";
+        out += "Su Mo Tu We Th Fr Sa\n";
+
+        const int NUMROWS = (SUNCOL + DIM + 6) / 7;
+        for (int r = 0; r < NUMROWS; r++) {
+            out += weekRow(YEAR, MON0, r, SUNCOL, DIM, TODAY, accentHex, dimHex);
+            if (r + 1 < NUMROWS)
+                out += '\n';
+        }
+        out += "</span>";
+        return out;
+    }
+
+    namespace {
+        // One month rendered as a fixed 8 markup lines (title, weekday header, up
+        // to 6 week rows, padded), each exactly 25 visible cols wide so three
+        // months tile side by side with aligned columns. Each content line is
+        // wrapped in its own FG span; blank pad lines are 25 spaces.
+        std::array<std::string, 8> monthBlockMarkup(int year, int mon0, int todayMday, const std::string& accentHex, const std::string& fgHex,
+                                                    const std::string& dimHex) {
+            constexpr int BLOCKW = 25; // 20 day cols + 2 gap + 3 "Wnn"
+            const int     SUNCOL = firstDayColumn(year, mon0);
+            const int     DIM    = daysInMonth(year, mon0);
+
+            char name[32];
+            {
+                struct tm t{};
+                t.tm_year  = year - 1900;
+                t.tm_mon   = mon0;
+                t.tm_mday  = 1;
+                t.tm_hour  = 12;
+                t.tm_isdst = -1;
+                mktime(&t);
+                strftime(name, sizeof(name), "%B", &t);
+            }
 
             std::array<std::string, 8> lines;
-            std::string                title(name);
-            const int                  padL = (int)std::max<long>(0, (20 - (long)title.size()) / 2);
-            lines[0] = std::string(padL, ' ') + title;
-            lines[0].resize(20, ' ');
-            lines[1] = "Mo Tu We Th Fr Sa Su";
-            for (int i = 2; i < 8; i++)
-                lines[i] = std::string(20, ' ');
 
-            for (int day = 1; day <= dim; day++) {
-                const int    cell = (MONCOL + day - 1) % 7;
-                const int    week = (MONCOL + day - 1) / 7;
-                std::string& row  = lines[2 + week];
-                const size_t pos  = (size_t)cell * 3;
-                char         buf[4];
-                std::snprintf(buf, sizeof(buf), "%2d", day);
-                row[pos]     = buf[0];
-                row[pos + 1] = buf[1];
-                if (day == todayMday) { // steal a neighbouring space for the brackets
-                    if (day < 10) {
-                        row[pos]     = '[';
-                        row[pos + 2] = ']';
-                    } else if (pos > 0) {
-                        row[pos - 1] = '[';
-                        row[pos + 2] = ']';
-                    }
+            std::string title(name);
+            if ((int)title.size() > BLOCKW)
+                title = title.substr(0, BLOCKW);
+            const int PADL = (BLOCKW - (int)title.size()) / 2;
+            const int PADR = BLOCKW - (int)title.size() - PADL;
+            lines[0] = std::string(PADL, ' ') + "<span foreground='" + accentHex + "'><b>" + esc(title) + "</b></span>" + std::string(PADR, ' ');
+
+            lines[1] = "<span foreground='" + fgHex + "'>Su Mo Tu We Th Fr Sa     </span>"; // 20 + 5 = 25
+
+            const int NUMROWS = (SUNCOL + DIM + 6) / 7;
+            for (int r = 0; r < 6; r++) {
+                if (r >= NUMROWS) {
+                    lines[2 + r] = std::string(BLOCKW, ' ');
+                    continue;
                 }
+                lines[2 + r] = "<span foreground='" + fgHex + "'>" + weekRow(year, mon0, r, SUNCOL, DIM, todayMday, accentHex, dimHex) + "</span>";
             }
             return lines;
         }
     }
 
-    std::string calendarYear(time_t now) {
+    std::string calendarYear(time_t now, const std::string& accentHex, const std::string& fgHex, const std::string& dimHex) {
         struct tm tmNow{};
         localtime_r(&now, &tmNow);
         const int YEAR = tmNow.tm_year + 1900;
 
-        char title[16];
-        std::snprintf(title, sizeof(title), "%d", YEAR);
+        constexpr int TOTALW = 3 * 25 + 2 * 3; // 3 blocks + two 3-space gaps = 81
+        char          ybuf[16];
+        std::snprintf(ybuf, sizeof(ybuf), "%d", YEAR);
+        const std::string YTITLE(ybuf);
+        const int         PADL = std::max(0, (TOTALW - (int)YTITLE.size()) / 2);
 
-        std::string out = "              " + std::string(title); // roughly centered over 3 columns
+        std::string out;
+        out += std::string(PADL, ' ') + "<span foreground='" + accentHex + "'><b>" + YTITLE + "</b></span>\n\n";
 
         for (int block = 0; block < 4; block++) { // 4 rows of 3 months
             std::array<std::array<std::string, 8>, 3> cols;
             for (int c = 0; c < 3; c++) {
                 const int MON = block * 3 + c;
-                cols[c]       = monthBlock(YEAR, MON, MON == tmNow.tm_mon ? tmNow.tm_mday : -1);
+                cols[c]       = monthBlockMarkup(YEAR, MON, MON == tmNow.tm_mon ? tmNow.tm_mday : -1, accentHex, fgHex, dimHex);
             }
-            out += '\n';
             for (int line = 0; line < 8; line++) {
-                out += '\n';
                 out += cols[0][line] + "   " + cols[1][line] + "   " + cols[2][line];
+                out += '\n';
             }
+            if (block + 1 < 4)
+                out += '\n'; // blank line between month-block rows
         }
         return out;
     }
