@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.27)
 project(hyprstatus
     DESCRIPTION "Compositor-rendered status bar plugin for Hyprland"
-    VERSION 0.1.0
+    VERSION 1.0.0
     LANGUAGES CXX
 )
 

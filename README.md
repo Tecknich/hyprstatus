@@ -87,21 +87,22 @@ either `pkill -RTMIN+9 Hyprland` with `hyprstatus-set = mymod, signal, 9`, or
 ## Modules
 
 `workspaces` (persistent lists, urgent/active states, click/scroll switching) ·
-`window` · `clock` (calendar tooltip) · `cpu` · `memory` · `temperature` ·
-`battery` · `network` · `pulseaudio` (PipeWire via pipewire-pulse) ·
-`power-profiles` · `language` · `submap` · `tray` (StatusNotifierItem host) ·
-custom exec modules.
+`window` · `clock` (colored waybar-style calendar tooltip; right-click for a
+full-year view) · `cpu` (per-core tooltip) · `memory` · `temperature` ·
+`battery` (instant AC plug/unplug via udev) · `network` ·
+`pulseaudio` (PipeWire via pipewire-pulse) · `power-profiles` · `language` ·
+`submap` · `tray` (StatusNotifierItem host + native DBusMenu popups) ·
+`notifications` (SwayNotificationCenter) · custom exec modules.
 
 Waybar option names (`format`, `format-icons.<key>`, `states.*`, `interval`,
 `on-click*`, `tooltip-format*`, `max-length`, ...) work as you expect.
 
-## Known limitations (v1)
+## Known limitations
 
-- **Tray menus**: items are shown, clicked, scrolled; `ContextMenu` is
-  forwarded, but hyprstatus does not render DBusMenu popups yet — pure
-  appindicator items (nm-applet & friends) won't pop their menus. Planned.
-- The bar auto-hides over fullscreen windows (compositor skips the render
-  stage) — by design.
+- **Tray menus** render natively (DBusMenu popups), including submenus,
+  separators, and checkboxes, but menu-item *icons* are not drawn and nesting
+  is limited to two levels.
+- The bar auto-hides over fullscreen windows by default (`hide_on_fullscreen`).
 - While a Hyprland config-error banner is visible it shares the reserved-area
   slot with the bar; layout normalizes as soon as the error is fixed.
 - One bar; per-monitor different layouts not yet supported (`monitors = `
