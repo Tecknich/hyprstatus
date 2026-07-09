@@ -33,6 +33,8 @@ namespace {
         std::vector<SSegment> segments(PHLMONITOR mon) override;
         bool                  hidden(PHLMONITOR mon) override;
         void                  onClick(uint32_t button, const SSegment& seg, PHLMONITOR mon) override;
+        // left-click cycles the profile, so the icon is always clickable
+        bool clickable(const SSegment&) const override { return true; }
 
       private:
         void        addMatch(sd_bus* bus); // (re)install the PropertiesChanged match on the given bus
