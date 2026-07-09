@@ -56,12 +56,13 @@ static void registerConfig() {
     c.colTooltipBg        = makeShared<CColorValue>("plugin:hyprstatus:col.tooltip_bg", "tooltip background", (Config::INTEGER)0xf01e1e28LL);
     c.colTooltipFg        = makeShared<CColorValue>("plugin:hyprstatus:col.tooltip_fg", "tooltip text", (Config::INTEGER)0xffc8c8d8LL);
 
-    for (auto& v : {(SP<Config::Values::IValue>)c.enabled, c.position, c.height, c.margin, c.spacing, c.padding,
-                    c.rounding, c.borderSize, c.blur, c.tooltips, c.tooltipDelayMs, c.fontFamily, c.fontSize,
-                    c.modulesLeft, c.modulesCenter, c.modulesRight, c.monitors, c.iconTheme, c.trayIconSize,
-                    c.colBackground, c.colForeground, c.colForegroundBright, c.colBorder, c.colAccent,
-                    c.colAccentDim, c.colOk, c.colWarn, c.colErr, c.colTooltipBg, c.colTooltipFg})
-        HyprlandAPI::addConfigValueV2(PHANDLE, v);
+    const auto REG = [](SP<Config::Values::IValue> v) { HyprlandAPI::addConfigValueV2(PHANDLE, v); };
+    for (auto& v : std::initializer_list<SP<Config::Values::IValue>>{
+             c.enabled, c.position, c.height, c.margin, c.spacing, c.padding, c.rounding, c.borderSize, c.blur,
+             c.tooltips, c.tooltipDelayMs, c.fontFamily, c.fontSize, c.modulesLeft, c.modulesCenter, c.modulesRight,
+             c.monitors, c.iconTheme, c.trayIconSize, c.colBackground, c.colForeground, c.colForegroundBright,
+             c.colBorder, c.colAccent, c.colAccentDim, c.colOk, c.colWarn, c.colErr, c.colTooltipBg, c.colTooltipFg})
+        REG(v);
 }
 
 APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
