@@ -1,6 +1,7 @@
 #include "Format.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cstdio>
 #include <ctime>
 #include <string_view>
@@ -284,5 +285,85 @@ namespace Fmt {
         }
         FLUSHROW();
         return out; // no trailing newline
+    }
+
+    namespace {
+        // one month rendered as fixed 8 lines x 20 cols (title, weekday header,
+        // 6 week rows) so months tile cleanly into columns. todayMday > 0 marks
+        // that day with [ ].
+        std::array<std::string, 8> monthBlock(int year, int mon0, int todayMday) {
+            struct tm first{};
+            first.tm_year  = year - 1900;
+            first.tm_mon   = mon0;
+            first.tm_mday  = 1;
+            first.tm_hour  = 12;
+            first.tm_isdst = -1;
+            mktime(&first);
+
+            const int MONCOL = (first.tm_wday + 6) % 7;
+
+            static const int DAYS[12] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
+            int              dim      = DAYS[mon0];
+            if (mon0 == 1 && year % 4 == 0 && (year % 100 != 0 || year % 400 == 0))
+                dim = 29;
+
+            char name[16];
+            strftime(name, sizeof(name), "%B", &first);
+
+            std::array<std::string, 8> lines;
+            std::string                title(name);
+            const int                  padL = (int)std::max<long>(0, (20 - (long)title.size()) / 2);
+            lines[0] = std::string(padL, ' ') + title;
+            lines[0].resize(20, ' ');
+            lines[1] = "Mo Tu We Th Fr Sa Su";
+            for (int i = 2; i < 8; i++)
+                lines[i] = std::string(20, ' ');
+
+            for (int day = 1; day <= dim; day++) {
+                const int    cell = (MONCOL + day - 1) % 7;
+                const int    week = (MONCOL + day - 1) / 7;
+                std::string& row  = lines[2 + week];
+                const size_t pos  = (size_t)cell * 3;
+                char         buf[4];
+                std::snprintf(buf, sizeof(buf), "%2d", day);
+                row[pos]     = buf[0];
+                row[pos + 1] = buf[1];
+                if (day == todayMday) { // steal a neighbouring space for the brackets
+                    if (day < 10) {
+                        row[pos]     = '[';
+                        row[pos + 2] = ']';
+                    } else if (pos > 0) {
+                        row[pos - 1] = '[';
+                        row[pos + 2] = ']';
+                    }
+                }
+            }
+            return lines;
+        }
+    }
+
+    std::string calendarYear(time_t now) {
+        struct tm tmNow{};
+        localtime_r(&now, &tmNow);
+        const int YEAR = tmNow.tm_year + 1900;
+
+        char title[16];
+        std::snprintf(title, sizeof(title), "%d", YEAR);
+
+        std::string out = "              " + std::string(title); // roughly centered over 3 columns
+
+        for (int block = 0; block < 4; block++) { // 4 rows of 3 months
+            std::array<std::array<std::string, 8>, 3> cols;
+            for (int c = 0; c < 3; c++) {
+                const int MON = block * 3 + c;
+                cols[c]       = monthBlock(YEAR, MON, MON == tmNow.tm_mon ? tmNow.tm_mday : -1);
+            }
+            out += '\n';
+            for (int line = 0; line < 8; line++) {
+                out += '\n';
+                out += cols[0][line] + "   " + cols[1][line] + "   " + cols[2][line];
+            }
+        }
+        return out;
     }
 }

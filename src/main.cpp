@@ -32,6 +32,7 @@ static void registerConfig() {
     c.rounding   = makeShared<CIntValue>("plugin:hyprstatus:rounding", "bar corner rounding", 0, SIntValueOptions{.min = 0, .max = 64});
     c.borderSize = makeShared<CIntValue>("plugin:hyprstatus:border_size", "bar border width", 0, SIntValueOptions{.min = 0, .max = 16});
     c.blur       = makeShared<CBoolValue>("plugin:hyprstatus:blur", "blur behind the bar", false);
+    c.hideOnFullscreen = makeShared<CBoolValue>("plugin:hyprstatus:hide_on_fullscreen", "hide the bar when a window is fullscreen", true);
     c.tooltips   = makeShared<CBoolValue>("plugin:hyprstatus:tooltips", "enable tooltips", true);
     c.tooltipDelayMs = makeShared<CIntValue>("plugin:hyprstatus:tooltip_delay", "tooltip hover delay (ms)", 500, SIntValueOptions{.min = 0, .max = 10000});
     c.fontFamily = makeShared<CStringValue>("plugin:hyprstatus:font_family", "bar font", "Sans");
@@ -59,7 +60,7 @@ static void registerConfig() {
     const auto REG = [](SP<Config::Values::IValue> v) { HyprlandAPI::addConfigValueV2(PHANDLE, v); };
     for (auto& v : std::initializer_list<SP<Config::Values::IValue>>{
              c.enabled, c.position, c.height, c.margin, c.spacing, c.padding, c.rounding, c.borderSize, c.blur,
-             c.tooltips, c.tooltipDelayMs, c.fontFamily, c.fontSize, c.modulesLeft, c.modulesCenter, c.modulesRight,
+             c.hideOnFullscreen, c.tooltips, c.tooltipDelayMs, c.fontFamily, c.fontSize, c.modulesLeft, c.modulesCenter, c.modulesRight,
              c.monitors, c.iconTheme, c.trayIconSize, c.colBackground, c.colForeground, c.colForegroundBright,
              c.colBorder, c.colAccent, c.colAccentDim, c.colOk, c.colWarn, c.colErr, c.colTooltipBg, c.colTooltipFg})
         REG(v);

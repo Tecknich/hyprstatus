@@ -6,6 +6,7 @@
 #include <cstdio>
 #include <fstream>
 #include <limits>
+#include <map>
 #include <optional>
 #include <string>
 
@@ -53,13 +54,9 @@ namespace {
             const auto PERC    = std::lround(100.0 * (double)USEDKB / (double)memTotal);
             const auto SWAPPCT = swapTotal > 0 ? std::lround(100.0 * (double)(swapTotal - swapFree) / (double)swapTotal) : 0L;
 
-            const auto TEXT = Fmt::replaceTokens(opt("format", "{percentage}%"), {
-                                                                                     {"percentage", std::to_string(PERC)},
-                                                                                     {"used", gib(USEDKB)},
-                                                                                     {"total", gib(memTotal)},
-                                                                                     {"avail", gib(memAvail)},
-                                                                                     {"swapPercentage", std::to_string(SWAPPCT)},
-                                                                                 });
+            m_tokens        = {{"percentage", std::to_string(PERC)}, {"used", gib(USEDKB)}, {"total", gib(memTotal)},
+                               {"avail", gib(memAvail)}, {"swapPercentage", std::to_string(SWAPPCT)}};
+            const auto TEXT = Fmt::replaceTokens(opt("format", "{percentage}%"), m_tokens);
             if (TEXT == m_text)
                 return;
             m_text = TEXT;
@@ -70,6 +67,14 @@ namespace {
             return {SSegment{.text = m_text}};
         }
 
+        std::string tooltip(const SSegment& seg) override {
+            if (!optBool("tooltip", true))
+                return "";
+            if (!seg.tooltip.empty())
+                return seg.tooltip;
+            return Fmt::replaceTokens(opt("tooltip-format", "{used} / {total} GiB used ({percentage}%)\n{avail} GiB available"), m_tokens);
+        }
+
       private:
         static std::string gib(unsigned long long kb) {
             char buf[32];
@@ -77,8 +82,9 @@ namespace {
             return buf;
         }
 
-        std::string                 m_text;
-        std::optional<CModuleTimer> m_timer;
+        std::string                        m_text;
+        std::map<std::string, std::string> m_tokens;
+        std::optional<CModuleTimer>        m_timer;
     };
 }
 

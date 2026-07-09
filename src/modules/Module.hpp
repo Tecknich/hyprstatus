@@ -5,6 +5,7 @@
 #define WLR_USE_UNSTABLE
 #include <hyprland/src/desktop/DesktopTypes.hpp>
 #include <hyprland/src/helpers/Color.hpp>
+#include <hyprland/src/helpers/math/Math.hpp>
 #include <hyprland/src/render/Texture.hpp>
 
 #include "../config/ModuleConfig.hpp"
@@ -45,6 +46,18 @@ class IModule {
     // Input. Defaults spawn the on-click*/on-scroll-* option commands.
     virtual void onClick(uint32_t button, const SSegment& seg, PHLMONITOR mon);
     virtual void onScroll(double delta, const SSegment& seg, PHLMONITOR mon);
+
+    // ---- native rendered popup menu (tray dbusmenu) ----
+    // A module may own at most one popup. All of these run on the main thread.
+    // Defaults are no-ops so non-popup modules are unaffected.
+    virtual bool          popupOpen() const { return false; }
+    virtual PHLMONITORREF popupMonitor() const { return {}; }
+    // called inside a pass element at RENDER_LAST_MOMENT with GL current
+    virtual void drawPopup(PHLMONITOR mon) {}
+    // true = the click was inside the popup and was consumed
+    virtual bool popupHandleButton(uint32_t button, const Vector2D& global) { return false; }
+    virtual void popupHandleMotion(const Vector2D& global) {}
+    virtual void closePopup() {}
 
     const std::string& name() const { return m_config.name; }
 

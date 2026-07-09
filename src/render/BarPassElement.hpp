@@ -36,3 +36,20 @@ class CTooltipPassElement : public IPassElement {
 
     PHLMONITORREF m_monitor;
 };
+
+// Queued at RENDER_LAST_MOMENT while a module has an open popup on this monitor.
+// draw() delegates to the popup-owning module's drawPopup().
+class CPopupPassElement : public IPassElement {
+  public:
+    explicit CPopupPassElement(PHLMONITORREF mon) : m_monitor(mon) {}
+    virtual ~CPopupPassElement() = default;
+
+    virtual std::vector<UP<IPassElement>> draw() override;
+    virtual bool                          needsLiveBlur() override { return false; }
+    virtual bool                          needsPrecomputeBlur() override { return false; }
+    virtual std::optional<CBox>           boundingBox() override { return std::nullopt; }
+    virtual const char*                   passName() override { return "CHyprstatusPopupPassElement"; }
+    virtual ePassElementType              type() override { return EK_CUSTOM; }
+
+    PHLMONITORREF m_monitor;
+};

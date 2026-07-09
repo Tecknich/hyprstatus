@@ -6,6 +6,7 @@
 #include <cmath>
 #include <filesystem>
 #include <fstream>
+#include <map>
 #include <optional>
 #include <string>
 
@@ -41,10 +42,8 @@ namespace {
 
             const auto CRIT = optInt("critical-threshold", 0);
             const auto CLS  = std::string{CRIT > 0 && TC >= CRIT ? "critical" : ""};
-            const auto TEXT = Fmt::replaceTokens(opt("format", "{temperatureC}°C"), {
-                                                                                        {"temperatureC", std::to_string(TC)},
-                                                                                        {"temperatureF", std::to_string(TF)},
-                                                                                    });
+            m_tokens        = {{"temperatureC", std::to_string(TC)}, {"temperatureF", std::to_string(TF)}};
+            const auto TEXT = Fmt::replaceTokens(opt("format", "{temperatureC}°C"), m_tokens);
             if (m_valid && TEXT == m_text && CLS == m_cls)
                 return;
             m_valid = true;
@@ -55,6 +54,14 @@ namespace {
 
         std::vector<SSegment> segments(PHLMONITOR) override {
             return {SSegment{.text = m_text, .cls = m_cls}};
+        }
+
+        std::string tooltip(const SSegment& seg) override {
+            if (!optBool("tooltip", true))
+                return "";
+            if (!seg.tooltip.empty())
+                return seg.tooltip;
+            return Fmt::replaceTokens(opt("tooltip-format", "{temperatureC}°C / {temperatureF}°F"), m_tokens);
         }
 
         bool hidden(PHLMONITOR) override {
@@ -97,11 +104,12 @@ namespace {
             }
         }
 
-        std::string                 m_path;
-        std::string                 m_text;
-        std::string                 m_cls;
-        bool                        m_valid = false;
-        std::optional<CModuleTimer> m_timer;
+        std::string                        m_path;
+        std::string                        m_text;
+        std::string                        m_cls;
+        std::map<std::string, std::string> m_tokens;
+        bool                               m_valid = false;
+        std::optional<CModuleTimer>        m_timer;
     };
 }
 

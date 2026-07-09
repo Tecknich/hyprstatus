@@ -1,5 +1,7 @@
 #include "Factories.hpp"
 
+#include <linux/input-event-codes.h>
+
 #include <chrono>
 #include <ctime>
 #include <optional>
@@ -41,7 +43,8 @@ namespace {
 
             static const std::string TOKEN = "{calendar}";
             if (fmt.find(TOKEN) != std::string::npos) {
-                const auto CAL = Fmt::calendarGrid(::time(nullptr));
+                // right-click while hovering toggles the month grid to a full year
+                const auto CAL = m_yearView ? Fmt::calendarYear(::time(nullptr)) : Fmt::calendarGrid(::time(nullptr));
                 size_t     pos = 0;
                 while ((pos = fmt.find(TOKEN, pos)) != std::string::npos) {
                     fmt.replace(pos, TOKEN.size(), CAL);
@@ -49,6 +52,17 @@ namespace {
                 }
             }
             return Fmt::stripPango(fmt);
+        }
+
+        void onClick(uint32_t button, const SSegment& seg, PHLMONITOR mon) override {
+            // right-click over the clock expands the calendar tooltip to a full
+            // year (and back), unless the user bound their own right-click action
+            if (button == BTN_RIGHT && opt("on-click-right").empty()) {
+                m_yearView = !m_yearView;
+                requestRedraw(); // repaints the bar + the hovered tooltip band
+                return;
+            }
+            IModule::onClick(button, seg, mon);
         }
 
       private:
@@ -62,6 +76,7 @@ namespace {
         }
 
         int64_t                     m_intervalMs = 60000;
+        bool                        m_yearView   = false;
         std::string                 m_text;
         std::optional<CModuleTimer> m_timer;
     };

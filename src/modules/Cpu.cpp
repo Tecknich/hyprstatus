@@ -1,12 +1,15 @@
 #include "Factories.hpp"
 
 #include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
+#include <map>
 #include <optional>
+#include <set>
 #include <sstream>
 #include <string>
 
@@ -23,18 +26,21 @@ namespace {
         }
 
         void update() override {
-            const auto USAGE = sampleUsage();
+            const auto USAGE = sample(); // total + per-core in one /proc/stat pass
 
             double load[1] = {0.0};
             if (::getloadavg(load, 1) < 1)
                 load[0] = 0.0;
             char loadBuf[32];
             std::snprintf(loadBuf, sizeof(loadBuf), "%.1f", load[0]);
+            m_load = loadBuf;
 
-            const auto TEXT = Fmt::replaceTokens(opt("format", "{usage}%"), {
-                                                                                {"usage", std::to_string(USAGE)},
-                                                                                {"load", loadBuf},
-                                                                            });
+            m_tokens = {{"usage", std::to_string(USAGE)}, {"load", m_load}};
+            // expose per-core percentages as {core0}{core1}... for custom formats
+            for (const auto& [idx, c] : m_cores)
+                m_tokens["core" + std::to_string(idx)] = std::to_string(c.lastPct);
+
+            const auto TEXT = Fmt::replaceTokens(opt("format", "{usage}%"), m_tokens);
             if (TEXT == m_text)
                 return;
             m_text = TEXT;
@@ -45,17 +51,27 @@ namespace {
             return {SSegment{.text = m_text}};
         }
 
-      private:
-        long sampleUsage() {
-            std::ifstream f("/proc/stat");
-            std::string   line;
-            if (!f.is_open() || !std::getline(f, line))
-                return m_lastUsage;
+        std::string tooltip(const SSegment& seg) override {
+            if (!optBool("tooltip", true))
+                return "";
+            if (!seg.tooltip.empty())
+                return seg.tooltip;
+            // user-supplied format wins; otherwise the per-core grid is the default
+            if (hasOpt("tooltip-format"))
+                return Fmt::replaceTokens(opt("tooltip-format"), m_tokens);
+            return defaultTooltip();
+        }
 
-            // cpu user nice system idle iowait irq softirq steal ...
-            std::istringstream iss(line);
-            std::string        label;
-            iss >> label;
+      private:
+        struct SCore {
+            unsigned long long prevTotal = 0, prevIdle = 0;
+            bool               hasPrev = false;
+            long               lastPct = 0;
+        };
+
+        // Parse one already-label-stripped /proc/stat cpu line and compute its
+        // usage% across the interval, updating the caller's previous sample.
+        static long computeUsage(std::istringstream& iss, unsigned long long& prevTotal, unsigned long long& prevIdle, bool& hasPrev, long lastPct) {
             unsigned long long v = 0, total = 0, idle = 0;
             for (int i = 0; iss >> v; ++i) {
                 total += v;
@@ -63,25 +79,97 @@ namespace {
                     idle += v;
             }
 
-            long usage = m_lastUsage;
-            if (m_hasPrev && total > m_prevTotal) {
-                const auto DTOTAL = total - m_prevTotal;
-                const auto DIDLE  = idle >= m_prevIdle ? idle - m_prevIdle : 0;
+            long usage = lastPct;
+            if (hasPrev && total > prevTotal) {
+                const auto DTOTAL = total - prevTotal;
+                const auto DIDLE  = idle >= prevIdle ? idle - prevIdle : 0;
                 usage             = std::lround(100.0 * (1.0 - (double)DIDLE / (double)DTOTAL));
                 usage             = std::clamp(usage, 0L, 100L);
             }
-            m_prevTotal = total;
-            m_prevIdle  = idle;
-            m_hasPrev   = true;
-            m_lastUsage = usage;
+            prevTotal = total;
+            prevIdle  = idle;
+            hasPrev   = true;
             return usage;
         }
 
-        unsigned long long          m_prevTotal = 0, m_prevIdle = 0;
-        bool                        m_hasPrev   = false;
-        long                        m_lastUsage = 0;
-        std::string                 m_text;
-        std::optional<CModuleTimer> m_timer;
+        // Reads the aggregate "cpu" line plus every "cpuN" per-core line. On read
+        // failure, keeps the last good sample. Returns aggregate usage%.
+        long sample() {
+            std::ifstream f("/proc/stat");
+            if (!f.is_open())
+                return m_lastUsage; // keep last good
+
+            std::string   line;
+            std::set<int> seen;
+            bool          gotAgg = false;
+
+            while (std::getline(f, line)) {
+                std::istringstream iss(line);
+                std::string        label;
+                if (!(iss >> label))
+                    continue;
+                if (label.compare(0, 3, "cpu") != 0)
+                    break; // past the cpu block (intr, ctxt, ...)
+
+                if (label == "cpu") {
+                    m_lastUsage = computeUsage(iss, m_prevTotal, m_prevIdle, m_hasPrev, m_lastUsage);
+                    gotAgg      = true;
+                    continue;
+                }
+
+                // per-core line: ^cpu[0-9]+
+                const std::string DIGITS = label.substr(3);
+                if (DIGITS.empty() || !std::all_of(DIGITS.begin(), DIGITS.end(), [](unsigned char ch) { return std::isdigit(ch) != 0; }))
+                    continue;
+                int idx = 0;
+                try {
+                    idx = std::stoi(DIGITS);
+                } catch (...) { continue; }
+
+                auto& c   = m_cores[idx];
+                c.lastPct = computeUsage(iss, c.prevTotal, c.prevIdle, c.hasPrev, c.lastPct);
+                seen.insert(idx);
+            }
+
+            // drop cores that went offline so the tooltip tracks live cores; a
+            // returning core re-primes cleanly (fresh entry, first read = 0%)
+            if (gotAgg) {
+                for (auto it = m_cores.begin(); it != m_cores.end();) {
+                    if (!seen.contains(it->first))
+                        it = m_cores.erase(it);
+                    else
+                        ++it;
+                }
+            }
+
+            return m_lastUsage;
+        }
+
+        // Default hover view: aggregate + load on top, then a per-core grid.
+        std::string defaultTooltip() const {
+            std::string out = "CPU " + std::to_string(m_lastUsage) + "%   load " + (m_load.empty() ? "0.0" : m_load);
+
+            constexpr int PER_ROW = 4;
+            int           col     = 0;
+            for (const auto& [idx, c] : m_cores) {
+                out += (col == 0) ? "\n" : "   ";
+                char cell[48];
+                std::snprintf(cell, sizeof(cell), "core %2d %3ld%%", idx, c.lastPct);
+                out += cell;
+                if (++col == PER_ROW)
+                    col = 0;
+            }
+            return out;
+        }
+
+        unsigned long long                 m_prevTotal = 0, m_prevIdle = 0;
+        bool                               m_hasPrev   = false;
+        long                               m_lastUsage = 0;
+        std::string                        m_text;
+        std::string                        m_load;
+        std::map<int, SCore>               m_cores; // keyed by core index (sorted)
+        std::map<std::string, std::string> m_tokens;
+        std::optional<CModuleTimer>        m_timer;
     };
 }
 
