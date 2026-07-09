@@ -148,8 +148,9 @@ Waybar-compatible module option names (`format`, `interval`, `on-click`,
 | tray | SNI: plugin owns org.kde.StatusNotifierWatcher + host (session bus) | icons via IconName theme lookup (hicolor+configured theme, PNG+SVG via librsvg) with IconPixmap fallback; Activate/ContextMenu/Scroll; Passive=dim, NeedsAttention=highlight. **No DBusMenu renderer in v1** — menu-only items (appindicator ports) won't pop menus yet; documented, Phase 2 |
 | custom | exec engine | exec / exec-if / interval / streaming / return-type json ({text,alt,tooltip,class,percentage}) / format-icons by alt / signal SIGRTMIN+N (signalfd) / max-length / hide-when-empty / 5 pointer actions |
 
-Not in v1 (roadmap): DBusMenu popups, native MPRIS, per-module bar instances,
-sliding animations, `hyprstatus-rule` per-monitor overrides.
+Shipped since v1: DBusMenu popups, native notifications module, per-module box
+styling, colored calendar. Roadmap: native MPRIS, per-module bar instances,
+sliding animations, `hyprstatus-rule` per-monitor overrides, menu-item icons.
 
 ## Class → color
 
