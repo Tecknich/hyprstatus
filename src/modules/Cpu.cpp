@@ -145,19 +145,12 @@ namespace {
             return m_lastUsage;
         }
 
-        // Default hover view: aggregate + load on top, then a per-core grid.
+        // Default hover view: a vertical list, aggregate on top then one line
+        // per core in ascending index order (Waybar-style). No trailing newline.
         std::string defaultTooltip() const {
-            std::string out = "CPU " + std::to_string(m_lastUsage) + "%   load " + (m_load.empty() ? "0.0" : m_load);
-
-            constexpr int PER_ROW = 4;
-            int           col     = 0;
+            std::string out = "Total: " + std::to_string(m_lastUsage) + "%";
             for (const auto& [idx, c] : m_cores) {
-                out += (col == 0) ? "\n" : "   ";
-                char cell[48];
-                std::snprintf(cell, sizeof(cell), "core %2d %3ld%%", idx, c.lastPct);
-                out += cell;
-                if (++col == PER_ROW)
-                    col = 0;
+                out += "\nCore" + std::to_string(idx) + ": " + std::to_string(c.lastPct) + "%";
             }
             return out;
         }

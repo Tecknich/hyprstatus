@@ -20,6 +20,7 @@ UP<IModule> createModuleByName(const SModuleConfig& cfg) {
         {"language", makeLanguageModule},
         {"submap", makeSubmapModule},
         {"tray", makeTrayModule},
+        {"notifications", makeNotificationsModule},
     };
 
     if (const auto IT = FACTORIES.find(cfg.name); IT != FACTORIES.end())
