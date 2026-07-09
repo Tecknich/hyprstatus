@@ -185,7 +185,12 @@ CAsyncProcess::~CAsyncProcess() {
         close(i.readFd);
         i.readFd = -1;
     }
-    if (i.streaming && !i.done && i.pid > 0)
+    // kill any not-yet-finished child regardless of mode: a hung run() child
+    // (e.g. wedged nvidia-smi / stalled checkupdates) would otherwise survive
+    // owner destruction and keep its Custom module busy forever. The grandchild
+    // pid is kill()-able and reaps itself (SA_NOCLDWAIT); a done child has
+    // already exited so well-behaved commands are unaffected.
+    if (!i.done && i.pid > 0)
         ::kill(i.pid, SIGKILL);
     i.done   = true;
     i.onLine = nullptr;

@@ -7,12 +7,14 @@
 
 #include <wayland-server-core.h>
 
+#include <cerrno>
 #include <chrono>
 
 namespace {
     struct SBusConn {
-        sd_bus*          bus    = nullptr;
-        wl_event_source* source = nullptr;
+        sd_bus*          bus     = nullptr;
+        wl_event_source* source  = nullptr;
+        bool             pumping = false; // reentrancy guard: sd_bus forbids recursive processing
     };
 
     SBusConn            g_session;
@@ -35,11 +37,17 @@ namespace {
     }
 
     void pump(SBusConn& conn) {
-        if (!conn.bus)
-            return;
-        int ret = 0;
+        if (!conn.bus || conn.pumping)
+            return; // already dispatching: recursive sd_bus_process is forbidden, nothing to do
+
+        conn.pumping = true;
+        int ret      = 0;
         while ((ret = sd_bus_process(conn.bus, nullptr)) > 0) {}
-        if (ret < 0)
+        conn.pumping = false;
+
+        // -EBUSY only means we were entered recursively from within dispatch; it is NOT a broken
+        // connection, so never tear down on it. Only real transport errors warrant a disconnect.
+        if (ret < 0 && ret != -EBUSY)
             disconnect(conn, false); // broken connection; next session()/system() call reconnects
     }
 
@@ -104,12 +112,10 @@ sd_bus* DBus::system() {
 void DBus::flush(sd_bus* bus) {
     if (!bus)
         return;
-    SBusConn* conn = bus == g_session.bus ? &g_session : bus == g_system.bus ? &g_system : nullptr;
-    if (!conn)
-        return;
-    pump(*conn);
-    if (conn->bus) // pump may have dropped a broken connection
-        sd_bus_flush(conn->bus);
+    // sd_bus_flush writes the outgoing queue to the socket WITHOUT dispatching, so it is safe to
+    // call from inside an sd-bus callback. Do NOT pump() here: sd_bus_process would return -EBUSY
+    // when re-entered during dispatch (D-Bus modules call flush() from within their callbacks).
+    sd_bus_flush(bus);
 }
 
 void DBus::shutdown() {

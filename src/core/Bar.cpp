@@ -4,6 +4,7 @@
 #include <hyprland/src/config/shared/complex/ComplexDataTypes.hpp>
 #include <hyprland/src/config/shared/parserUtils/ParserUtils.hpp>
 #include <hyprland/src/helpers/Monitor.hpp>
+#include <hyprland/src/managers/input/InputManager.hpp>
 #include <hyprland/src/render/OpenGL.hpp>
 #include <hyprland/src/render/Renderer.hpp>
 
@@ -256,6 +257,23 @@ void CBar::draw() {
     drawGroup(left);
     drawGroup(center);
     drawGroup(right);
+
+    // A relayout under a stationary cursor (a module widened, segments shifted)
+    // moves segments out from under the index onMouseMove recorded, so the stale
+    // m_hoveredIdx now points at a different segment -> the highlight above and
+    // drawTooltip below attach to the wrong one. Re-resolve the hovered index by
+    // hit-testing the cursor's current position against the freshly-built
+    // regions so hover stays bound to the segment actually under the cursor.
+    // Only when a hover is already active: starting one here would bypass the
+    // hover-start timestamp/tooltip-timer setup owned by CBarManager::onMouseMove.
+    if (m_hoveredIdx >= 0) {
+        int resolvedIdx = -1;
+        hitTest(g_pInputManager->getMouseCoordsInternal(), &resolvedIdx); // -1 if cursor covers no segment
+        if (resolvedIdx != m_hoveredIdx) {
+            m_hoveredIdx = resolvedIdx;
+            damage(); // this frame already drew the stale highlight; force a corrective redraw
+        }
+    }
 }
 
 void CBar::drawTooltip() {

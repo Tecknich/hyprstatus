@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "../util/Format.hpp"
@@ -21,8 +22,15 @@ class CWorkspacesModule : public IModule {
 
     void init() override {
         auto& EV = Event::bus()->m_events;
-        m_listeners.push_back(EV.workspace.created.listen([this] { requestRedraw(); }));
-        m_listeners.push_back(EV.workspace.removed.listen([this] { requestRedraw(); }));
+        m_listeners.push_back(EV.workspace.created.listen([this](const PHLWORKSPACEREF& ws) {
+            watchRename(ws.lock());
+            requestRedraw();
+        }));
+        m_listeners.push_back(EV.workspace.removed.listen([this](const PHLWORKSPACEREF& ws) {
+            if (const auto WS = ws.lock())
+                m_renameListeners.erase(WS->m_id);
+            requestRedraw();
+        }));
         m_listeners.push_back(EV.workspace.active.listen([this] { requestRedraw(); }));
         m_listeners.push_back(EV.workspace.moveToMonitor.listen([this] { requestRedraw(); }));
         m_listeners.push_back(EV.window.moveToWorkspace.listen([this] { requestRedraw(); }));
@@ -30,6 +38,13 @@ class CWorkspacesModule : public IModule {
         m_listeners.push_back(EV.window.open.listen([this] { requestRedraw(); }));
         m_listeners.push_back(EV.window.close.listen([this] { requestRedraw(); }));
         m_listeners.push_back(EV.monitor.focused.listen([this] { requestRedraw(); }));
+
+        // Workspace renames have NO bus event; only the per-object
+        // CWorkspace::m_events.renamed signal fires. Watch every live
+        // workspace now, and each newly created one above, so the bar
+        // redraws after `hyprctl dispatch renameworkspace ...`.
+        for (const auto& WS : g_pCompositor->getWorkspacesCopy())
+            watchRename(WS);
     }
 
     std::vector<SSegment> segments(PHLMONITOR mon) override {
@@ -94,24 +109,60 @@ class CWorkspacesModule : public IModule {
     }
 
     void onClick(uint32_t /*button*/, const SSegment& seg, PHLMONITOR) override {
-        dispatchWorkspace(std::to_string((int64_t)seg.id));
+        // Absolute switch to the CLICKED workspace. seg.id carries the signed
+        // workspace id (round-tripped through size_t). A bare negative number
+        // is parsed as a RELATIVE jump by the `workspace` dispatcher, so named
+        // (id < 0) and special workspaces must be dispatched by name.
+        const WORKSPACEID ID = (int64_t)seg.id;
+        if (const auto WS = g_pCompositor->getWorkspaceByID(ID); WS && !WS->inert()) {
+            if (WS->m_isSpecialWorkspace) {
+                // togglespecialworkspace prepends "special:"; m_name is
+                // "special:<n>" (or "special:special" for the default).
+                std::string name = WS->m_name;
+                if (name.starts_with("special:"))
+                    name = name.substr(8);
+                dispatchWorkspace("togglespecialworkspace", name);
+                return;
+            }
+            if (ID < 0) {
+                dispatchWorkspace("workspace", "name:" + WS->m_name);
+                return;
+            }
+        }
+        // live numbered workspace or persistent (not-yet-created) positive id
+        dispatchWorkspace("workspace", std::to_string(ID));
     }
 
     void onScroll(double delta, const SSegment&, PHLMONITOR) override {
-        dispatchWorkspace(delta < 0 ? "-1" : "+1");
+        // relative step is the intended scroll behavior
+        dispatchWorkspace("workspace", delta < 0 ? "-1" : "+1");
     }
 
   private:
-    // deferred: switching workspaces from inside an input callback would
-    // mutate compositor state mid-iteration
-    static void dispatchWorkspace(const std::string& arg) {
-        g_pEventLoopManager->doLater([arg] {
+    // Deferred: invoking a dispatcher from inside an input callback would
+    // mutate compositor state mid-iteration. Use doLaterLock (RAII) rather
+    // than bare doLater so the pending idle is cancelled when this module is
+    // destroyed at PLUGIN_EXIT -- otherwise it would run unmapped .so code
+    // after dlclose and crash the session. One pending dispatch suffices;
+    // reassigning m_dispatchLater cancels any previous one (last click wins).
+    void dispatchWorkspace(const std::string& dispatcher, const std::string& arg) {
+        m_dispatchLater = g_pEventLoopManager->doLaterLock([dispatcher, arg] {
             if (!g_pKeybindManager)
                 return;
-            const auto IT = g_pKeybindManager->m_dispatchers.find("workspace");
+            const auto IT = g_pKeybindManager->m_dispatchers.find(dispatcher);
             if (IT != g_pKeybindManager->m_dispatchers.end())
                 IT->second(arg);
         });
+    }
+
+    // Subscribe to a workspace's per-object renamed signal (no bus event
+    // exists for renames). Idempotent per workspace id.
+    void watchRename(const PHLWORKSPACE& ws) {
+        if (!ws || ws->inert())
+            return;
+        if (m_renameListeners.contains(ws->m_id))
+            return;
+        m_renameListeners.emplace(ws->m_id, ws->m_events.renamed.listen([this] { requestRedraw(); }));
     }
 
     std::vector<WORKSPACEID> persistentIDs(const PHLMONITOR& mon) const {
@@ -131,7 +182,9 @@ class CWorkspacesModule : public IModule {
         return ids;
     }
 
-    std::vector<CHyprSignalListener> m_listeners;
+    std::vector<CHyprSignalListener>                        m_listeners;
+    std::unordered_map<WORKSPACEID, CHyprSignalListener>    m_renameListeners; // per-workspace renamed hooks
+    UP<SEventLoopDoLaterLock>                               m_dispatchLater;   // RAII-cancelled pending dispatch
 };
 
 } // namespace

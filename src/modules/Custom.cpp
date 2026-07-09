@@ -164,10 +164,14 @@ class CCustomModule : public IModule {
     }
 
     void onStreamExit() {
-        // keep the last output; restart-interval set -> re-stream after N s
+        // keep the last output; restart-interval set -> re-stream after N s.
+        // Absent -> no restart (matches waybar). When set, clamp to a >=1s
+        // floor so restart-interval=0 (or a child that exits immediately)
+        // can't fork/exec-storm the compositor main loop once per event-loop
+        // iteration.
         if (!hasOpt("restart-interval"))
             return;
-        const auto SECS = std::max<int64_t>(0, optInt("restart-interval", 1));
+        const auto SECS = std::max<int64_t>(1, optInt("restart-interval", 1));
         m_restartTimer  = std::make_unique<CModuleTimer>(std::chrono::seconds(SECS), [this]() {
             ensureStream();
             m_restartTimer.reset(); // one-shot; the event loop's own SP keeps the firing timer alive through this call

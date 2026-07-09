@@ -33,6 +33,23 @@ namespace {
         return v;
     }
 
+    // Connectivity gate: operstate is authoritative; carrier is the fallback for
+    // drivers that never set operstate (report "unknown", e.g. tun/vpn). A downed
+    // link (operstate "down"/"dormant"/... or carrier 0) counts as disconnected
+    // even when the sysfs dir still exists (e.g. an explicitly configured iface).
+    bool linkUp(const std::string& iface) {
+        std::ifstream f("/sys/class/net/" + iface + "/operstate");
+        std::string   state;
+        if (f >> state) {
+            if (state == "up")
+                return true;
+            if (state != "unknown")
+                return false;
+        }
+        // carrier read fails (EINVAL) while the iface is administratively down -> not up
+        return readLL("/sys/class/net/" + iface + "/carrier").value_or(0) == 1;
+    }
+
     std::string defaultRouteIface() {
         std::ifstream f("/proc/net/route");
         if (!f.is_open())
@@ -137,7 +154,7 @@ namespace {
                 iface = defaultRouteIface();
 
             std::error_code ec;
-            const bool      CONNECTED = !iface.empty() && std::filesystem::exists("/sys/class/net/" + iface, ec);
+            const bool      CONNECTED = !iface.empty() && std::filesystem::exists("/sys/class/net/" + iface, ec) && linkUp(iface);
 
             auto state = eState::DISCONNECTED;
             if (CONNECTED)

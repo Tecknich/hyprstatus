@@ -79,44 +79,76 @@ void RtSignals::subscribe(int n, std::function<void()> cb) {
     if (!ensurePipe())
         return;
 
-    auto& vec = g_subs[n];
-    if (vec.empty()) { // first cb for this signo: claim it, saving the old action
+    // Claim the signal (install our handler + save the original action) only the
+    // first time we ever see this signo. g_savedActions membership -- not g_subs
+    // emptiness -- is what tracks whether our handler is installed, because
+    // unsubscribeAll() now clears g_subs while deliberately leaving the handler in
+    // place across reloads. Keying off g_subs.empty() here would let a reload's
+    // re-subscribe re-run sigaction() and overwrite the saved action with our own
+    // handler, so shutdown() would "restore" our handler instead of SIG_DFL.
+    if (g_savedActions.find(n) == g_savedActions.end()) {
         struct sigaction sa  = {};
         struct sigaction old = {};
         sa.sa_handler        = handler;
         sigemptyset(&sa.sa_mask);
         sa.sa_flags = SA_RESTART;
-        if (sigaction(SIGRTMIN + n, &sa, &old) != 0) {
-            g_subs.erase(n);
+        if (sigaction(SIGRTMIN + n, &sa, &old) != 0)
             return;
-        }
         g_savedActions[n] = old;
     }
-    vec.emplace_back(std::move(cb));
+    g_subs[n].emplace_back(std::move(cb));
 }
 
 void RtSignals::unsubscribeAll() {
+    // Clear the callback map ONLY. We must NOT restore SIG_DFL here: rebuild()
+    // calls this and re-subscribes later in the same pass, so restoring would open
+    // a window where SIGRTMIN+N has default disposition (= process termination per
+    // signal(7)). A racing `pkill -RTMIN+N Hyprland` -- the plugin's own documented
+    // refresh mechanism, fired asynchronously by volume/brightness/mail hooks --
+    // arriving in that window would kill the whole compositor session. Leaving our
+    // self-pipe handler installed keeps stray signals harmless: they just write a
+    // byte that onSignalReadable() drains against an empty callback list = no-op.
+    // The saved actions, handler, pipe and wl source all persist for the next
+    // subscribe; original dispositions are restored only in shutdown().
+    g_subs.clear();
+}
+
+void RtSignals::shutdown() {
+    // Restore the ORIGINAL signal dispositions here and ONLY here (unsubscribeAll()
+    // no longer touches them). After this loop no NEW delivery runs our handler.
     for (auto& [n, old] : g_savedActions)
         sigaction(SIGRTMIN + n, &old, nullptr);
     g_savedActions.clear();
     g_subs.clear();
-    // pipe + wl source stay for the next subscribe
-}
 
-void RtSignals::shutdown() {
-    unsubscribeAll();
+    // Stop draining the read end before we tear down any pipe fd.
     if (g_source) {
         wl_event_source_remove(g_source);
         g_source = nullptr;
     }
-    // handlers restored above, so nothing writes anymore; close write end last
-    // anyway and the handler's fd check guards a racing in-flight signal
+
+    // Write end teardown, TOCTOU-hardened. An RT signal is process-directed and may
+    // already be executing handler() on another compositor thread, having passed
+    // its `g_pipe[1] >= 0` check. First publish -1 so any not-yet-started handler
+    // skips the write; then dup2() /dev/null over the real fd so an in-flight write
+    // lands harmlessly instead of into a fd that a plain close() could let get
+    // recycled (client socket / dmabuf / log) and silently corrupted. Residual
+    // risk: a handler preempted between check and write, resumed only after the
+    // final close() below, could still hit a recycled fd -- a nanosecond-wide
+    // window per plugin unload, accepted (handler stays write()-only, i.e.
+    // async-signal-safe).
+    if (g_pipe[1] >= 0) {
+        const int WFD = g_pipe[1];
+        g_pipe[1]     = -1;
+        const int NUL = open("/dev/null", O_WRONLY | O_CLOEXEC);
+        if (NUL >= 0) {
+            dup2(NUL, WFD); // atomically points WFD at /dev/null (closes pipe write end)
+            close(NUL);
+        }
+        close(WFD);
+    }
     if (g_pipe[0] >= 0) {
         close(g_pipe[0]);
         g_pipe[0] = -1;
-    }
-    if (g_pipe[1] >= 0) {
-        close(g_pipe[1]);
-        g_pipe[1] = -1;
     }
 }

@@ -41,6 +41,16 @@ namespace {
         return v;
     }
 
+    // Newline-unescaping is presentation-only: it must NOT touch command values
+    // (exec, exec-if, on-click*, on-scroll*, ...) where a literal \n is real shell
+    // syntax (e.g. awk/sed programs) and rewriting it silently breaks the command.
+    // Whitelist the keys where an embedded newline is the intended meaning: the
+    // format family (format, format-alt, format-icons, ...) and any tooltip key
+    // (tooltip, tooltip-format, ...). Everything else is stored VERBATIM.
+    bool wantsNewlineUnescape(const std::string& key) {
+        return key.starts_with("format") || key.find("tooltip") != std::string::npos;
+    }
+
     std::string trimLeading(const std::string& s) {
         size_t i = 0;
         while (i < s.size() && std::isspace((unsigned char)s[i]))
@@ -93,7 +103,8 @@ static Hyprlang::CParseResult onSetKeyword(const char* COMMAND, const char* VALU
         return result;
     }
 
-    ensureEntry(NAME).opts[KEY] = unescapeNewlines(trimLeading(RAW.substr(SECOND + 1)));
+    const auto VAL = trimLeading(RAW.substr(SECOND + 1));
+    ensureEntry(NAME).opts[KEY] = wantsNewlineUnescape(KEY) ? unescapeNewlines(VAL) : VAL;
     return result;
 }
 

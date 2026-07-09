@@ -221,12 +221,20 @@ namespace {
                     sd_bus_release_name(m_bus, WATCHER_NAME);
                 DBus::flush(m_bus);
             }
+            // Drop our owned ref LAST — after every slot unref and release_name
+            // above. We hold an sd_bus_ref (taken in init) so the bus object
+            // stays alive through teardown even if DBus already dropped its own
+            // ref (e.g. after an auto-disconnect on bus error). Otherwise the
+            // final slot unref could free the bus and release_name/flush would
+            // touch freed memory. sd_bus_unref(nullptr) is a safe no-op.
+            sd_bus_unref(m_bus);
         }
 
         void init() override {
-            m_bus = DBus::session();
-            if (!m_bus)
-                return;
+            sd_bus* bus = DBus::session();
+            if (!bus)
+                return; // no bus: stay hidden, own no ref
+            m_bus = sd_bus_ref(bus); // owned ref, released last in the dtor
             if (!tryBecomeWatcher())
                 enterClientMode();
         }

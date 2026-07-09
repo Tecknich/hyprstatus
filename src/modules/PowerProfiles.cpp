@@ -158,10 +158,9 @@ namespace {
             return;
         DBus::flush(BUS);
 
-        // optimistic: keeps rapid click-cycling coherent; the emits-change
-        // PropertiesChanged -> GetAll round trip is authoritative
-        m_active = profile;
-        requestRedraw();
+        // No optimistic local mutation: the daemon's PropertiesChanged -> GetAll
+        // round trip is authoritative, and sOnSetReply re-fetches on error. A
+        // rejected Set therefore never leaves a phantom profile on the bar.
     }
 
     std::string CPowerProfilesModule::activeDriver() const {
@@ -227,8 +226,12 @@ namespace {
         return 1;
     }
 
-    int CPowerProfilesModule::sOnSetReply(sd_bus_message*, void*, sd_bus_error*) {
-        // failure surfaces as the next PropertiesChanged/GetAll correcting m_active
+    int CPowerProfilesModule::sOnSetReply(sd_bus_message* m, void* userdata, sd_bus_error*) {
+        // A successful Set emits PropertiesChanged -> GetAll (authoritative). An
+        // error emits nothing, so re-fetch here to resync m_active and avoid the
+        // display drifting away from the daemon's real ActiveProfile.
+        if (sd_bus_message_is_method_error(m, nullptr))
+            static_cast<CPowerProfilesModule*>(userdata)->fetchAll();
         return 1;
     }
 }

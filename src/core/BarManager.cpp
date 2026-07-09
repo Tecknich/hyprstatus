@@ -10,6 +10,7 @@
 #include <hyprland/src/helpers/Monitor.hpp>
 #include <hyprland/src/helpers/time/Time.hpp>
 #include <hyprland/src/managers/SeatManager.hpp>
+#include <hyprland/src/managers/SessionLockManager.hpp>
 #include <hyprland/src/managers/eventLoop/EventLoopManager.hpp>
 #include <hyprland/src/managers/input/InputManager.hpp>
 #include <hyprland/src/render/Renderer.hpp>
@@ -35,6 +36,37 @@ static std::vector<std::string> splitWs(const std::string& s) {
     while (ss >> tok)
         out.push_back(tok);
     return out;
+}
+
+// The tooltip is drawn just beyond the bar (a small gap past it) and clamped
+// on-monitor, so it lives OUTSIDE barBoxGlobal(): bar->damage() alone never
+// repaints it, and pass-element GL is clipped to the frame damage, so an
+// undamaged tooltip box is never painted (and, once painted, never erased).
+// Damage the whole strip from the bar to the monitor edge on the tooltip side
+// (bar box included) whenever a tooltip appears or is dismissed.
+static void damageTooltipBand(const CBar* bar) {
+    if (!bar)
+        return;
+
+    const auto MON = bar->m_monitor.lock();
+    const CBox BG  = bar->barBoxGlobal();
+    if (!MON) {
+        g_pHyprRenderer->damageBox(BG);
+        return;
+    }
+
+    const double MONX = MON->m_position.x;
+    const double MONY = MON->m_position.y;
+    const double MONW = MON->m_size.x;
+    const double MONH = MON->m_size.y;
+
+    CBox band;
+    if (g_cfg.position->value() == "bottom") // tooltip is above the bar
+        band = CBox{MONX, MONY, MONW, (BG.y + BG.h) - MONY};
+    else                                     // tooltip is below the bar
+        band = CBox{MONX, BG.y, MONW, (MONY + MONH) - BG.y};
+
+    g_pHyprRenderer->damageBox(band);
 }
 
 void CBarManager::init() {
@@ -87,9 +119,12 @@ void CBarManager::init() {
         [](SP<CEventLoopTimer>, void*) {
             if (!g_barManager)
                 return;
+            // never surface a tooltip over the session lockscreen
+            if (g_pSessionLockManager && g_pSessionLockManager->isSessionLocked())
+                return;
             for (auto& [id, bar] : g_barManager->m_bars) {
                 if (bar->m_hoveredIdx != -1)
-                    bar->damage();
+                    damageTooltipBand(bar.get());
             }
         },
         nullptr);
@@ -255,6 +290,11 @@ void CBarManager::onRenderStage(eRenderStage stage) {
     if (!visible() || !g_cfg.tooltips->value())
         return;
 
+    // tooltips render at RENDER_LAST_MOMENT, above the lockscreen surface — do
+    // not leak bar tooltip content over a locked session.
+    if (g_pSessionLockManager && g_pSessionLockManager->isSessionLocked())
+        return;
+
     const auto PMONITOR = g_pHyprRenderer->m_renderData.pMonitor.lock();
     if (!PMONITOR)
         return;
@@ -300,6 +340,27 @@ static bool pointClaimedAbove(const Vector2D& pos, const PHLMONITOR& mon) {
 }
 
 void CBarManager::onMouseButton(const IPointer::SButtonEvent& e, Event::SCallbackInfo& info) {
+    // While the session is locked, InputManager emits this before any lock
+    // routing: consuming it would eat clicks meant for the lock surface, and
+    // routing it would fire module onClick handlers (workspace switch, spawn())
+    // on a locked machine. Never touch the event.
+    if (g_pSessionLockManager && g_pSessionLockManager->isSessionLocked()) {
+        m_consumedButtons.clear();
+        return;
+    }
+
+    const bool PRESS = e.state == WL_POINTER_BUTTON_STATE_PRESSED;
+
+    // A RELEASE is only ours if we swallowed its PRESS. Decide this independent
+    // of cursor position so the press/release stay balanced even when the button
+    // is released off the bar, and a release whose press went to a window (e.g. a
+    // mod+drag ending over the bar) is never stolen — stealing it wedges the drag.
+    if (!PRESS) {
+        if (m_consumedButtons.erase(e.button))
+            info.cancelled = true;
+        return;
+    }
+
     if (!visible())
         return;
 
@@ -312,13 +373,17 @@ void CBarManager::onMouseButton(const IPointer::SButtonEvent& e, Event::SCallbac
     if (!PMONITOR)
         return;
 
+    // Bar auto-hides over a solitary fullscreen window (RENDER_POST_WINDOWS is
+    // skipped that frame): it is not drawn, so it must not consume or route the
+    // click — that would eat in-app clicks and fire stale hit-region actions.
+    if (!PMONITOR->m_solitaryClient.expired())
+        return;
+
     if (pointClaimedAbove(MOUSE, PMONITOR))
         return; // do not consume
 
-    info.cancelled = true; // swallow before keybinds / window delivery
-
-    if (e.state != WL_POINTER_BUTTON_STATE_PRESSED)
-        return;
+    info.cancelled = true; // swallow the press before keybinds / window delivery
+    m_consumedButtons.insert(e.button);
 
     int regionIdx = -1;
     if (!BAR->hitTest(MOUSE, &regionIdx))
@@ -330,6 +395,10 @@ void CBarManager::onMouseButton(const IPointer::SButtonEvent& e, Event::SCallbac
 }
 
 void CBarManager::onMouseAxis(const IPointer::SAxisEvent& e, Event::SCallbackInfo& info) {
+    // Never consume or route scroll on a locked session (see onMouseButton).
+    if (g_pSessionLockManager && g_pSessionLockManager->isSessionLocked())
+        return;
+
     if (!visible())
         return;
 
@@ -340,6 +409,11 @@ void CBarManager::onMouseAxis(const IPointer::SAxisEvent& e, Event::SCallbackInf
 
     const auto PMONITOR = BAR->m_monitor.lock();
     if (!PMONITOR)
+        return;
+
+    // Not drawn over a solitary fullscreen window: do not swallow the scroll
+    // (else a scroll on a fullscreen app silently dispatches workspace +1/-1).
+    if (!PMONITOR->m_solitaryClient.expired())
         return;
 
     if (pointClaimedAbove(MOUSE, PMONITOR))
@@ -377,6 +451,13 @@ void CBarManager::onMouseMove(const Vector2D& pos) {
 
     if (oldBar == newBar && (!newBar || newBar->m_hoveredIdx == newIdx))
         return; // hover unchanged
+
+    // If the old hover lasted long enough for its tooltip to have painted,
+    // damage the tooltip band so it is erased — the tooltip lives outside the
+    // bar box, which bar->damage() alone would leave as a ghost.
+    if (oldBar && g_cfg.tooltips->value() &&
+        Time::millis(Time::steadyNow()) - oldBar->m_hoverStartMs >= (uint64_t)g_cfg.tooltipDelayMs->value())
+        damageTooltipBand(oldBar);
 
     if (oldBar && oldBar != newBar) {
         oldBar->m_hoveredIdx = -1;

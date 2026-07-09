@@ -1,6 +1,8 @@
 #pragma once
+#include <cstdint>
 #include <map>
 #include <string>
+#include <unordered_set>
 #include <vector>
 #define WLR_USE_UNSTABLE
 #include <hyprland/src/SharedDefs.hpp>
@@ -59,6 +61,11 @@ class CBarManager {
 
     bool m_runtimeVisible = true;
     bool m_built          = false;
+
+    // pointer buttons whose PRESS the bar swallowed; a RELEASE is only consumed
+    // when its press is in here, so releases for presses that went to a window
+    // (e.g. a mod+drag ending over the bar) are never stolen.
+    std::unordered_set<uint32_t> m_consumedButtons;
 
     // listeners (dropping = unsubscribing)
     CHyprSignalListener m_lRenderStage, m_lMonAdded, m_lMonRemoved, m_lMonLayout,

@@ -118,7 +118,8 @@ namespace {
                 auto glyphs = Fmt::split(ICONS, ' ');
                 std::erase_if(glyphs, [](const std::string& s) { return s.empty(); });
                 if (!glyphs.empty()) {
-                    const size_t IDX = std::min((size_t)(capacity * (long long)glyphs.size() / 101), glyphs.size() - 1);
+                    const int    N   = (int)glyphs.size();
+                    const size_t IDX = (size_t)std::clamp((int)std::floor((double)capacity / (100.0 / N)), 0, N - 1);
                     icon             = glyphs[IDX];
                 }
             }
