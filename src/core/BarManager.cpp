@@ -141,14 +141,26 @@ void CBarManager::init() {
     g_pEventLoopManager->addTimer(g_tooltipTimer);
 }
 
+IModule* CBarManager::moduleWithPopup() {
+    for (auto& mod : m_modules) {
+        if (mod && mod->popupOpen())
+            return mod.get();
+    }
+    return nullptr;
+}
+
 void CBarManager::shutdown() {
     m_layout = {};
+    // close any open popup before tearing its owning module down
+    if (auto* const POPMOD = moduleWithPopup())
+        POPMOD->closePopup();
     m_modules.clear(); // FIRST: module dtors join threads / remove timers and fd sources
     m_bars.clear();
     clearReservedAll();
 
     g_pHyprRenderer->m_renderPass.removeAllOfType("CHyprstatusBarPassElement");
     g_pHyprRenderer->m_renderPass.removeAllOfType("CHyprstatusTooltipPassElement");
+    g_pHyprRenderer->m_renderPass.removeAllOfType("CHyprstatusPopupPassElement");
 
     if (g_tooltipTimer) {
         g_pEventLoopManager->removeTimer(g_tooltipTimer);
@@ -305,11 +317,11 @@ void CBarManager::onRenderStage(eRenderStage stage) {
     if (stage != RENDER_LAST_MOMENT)
         return;
 
-    if (!visible() || !g_cfg.tooltips->value())
+    if (!visible())
         return;
 
-    // tooltips render at RENDER_LAST_MOMENT, above the lockscreen surface — do
-    // not leak bar tooltip content over a locked session.
+    // popups + tooltips render at RENDER_LAST_MOMENT, above the lockscreen
+    // surface — never leak bar content over a locked session.
     if (g_pSessionLockManager && g_pSessionLockManager->isSessionLocked())
         return;
 
@@ -317,8 +329,20 @@ void CBarManager::onRenderStage(eRenderStage stage) {
     if (!PMONITOR)
         return;
 
-    // no tooltip while the bar is hidden over fullscreen
+    // no overlays while the bar is hidden over fullscreen
     if (g_cfg.hideOnFullscreen->value() && PMONITOR->inFullscreenMode())
+        return;
+
+    // native popup menu (independent of the tooltips option): queue it for the
+    // monitor the popup is anchored on. While any popup is open, suppress bar
+    // tooltips so they can't paint over/under the menu.
+    if (auto* const POPMOD = moduleWithPopup()) {
+        if (POPMOD->popupMonitor().lock() == PMONITOR)
+            g_pHyprRenderer->m_renderPass.add(makeUnique<CPopupPassElement>(PMONITOR));
+        return;
+    }
+
+    if (!g_cfg.tooltips->value())
         return;
 
     auto* const BAR = barForMonitor(PMONITOR);
@@ -380,6 +404,20 @@ void CBarManager::onMouseButton(const IPointer::SButtonEvent& e, Event::SCallbac
     if (!PRESS) {
         if (m_consumedButtons.erase(e.button))
             info.cancelled = true;
+        return;
+    }
+
+    // An open popup menu grabs pointer presses before the bar's own hit-testing.
+    // A press inside the popup is routed to it; a press anywhere else dismisses
+    // the popup and is swallowed (standard click-away semantics).
+    if (auto* const POPMOD = moduleWithPopup()) {
+        const auto MOUSE = g_pInputManager->getMouseCoordsInternal();
+        m_consumedButtons.insert(e.button); // balance the eventual RELEASE
+        info.cancelled = true;
+        if (!POPMOD->popupHandleButton(e.button, MOUSE)) {
+            // press outside the popup -> dismiss it (closePopup damages the monitor)
+            POPMOD->closePopup();
+        }
         return;
     }
 
@@ -453,6 +491,13 @@ void CBarManager::onMouseAxis(const IPointer::SAxisEvent& e, Event::SCallbackInf
 }
 
 void CBarManager::onMouseMove(const Vector2D& pos) {
+    // While a popup menu is open it owns hover feedback; the module damages its
+    // popup monitor when the highlighted entry changes. Suppress bar hover.
+    if (auto* const POPMOD = moduleWithPopup()) {
+        POPMOD->popupHandleMotion(pos);
+        return;
+    }
+
     CBar* newBar = nullptr;
     int   newIdx = -1;
 

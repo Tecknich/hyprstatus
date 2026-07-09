@@ -59,6 +59,9 @@ class CBarManager {
     void buildBars();      // create CBar for each wanted monitor
     void applyReserved(const PHLMONITOR& mon);
 
+    // first module (if any) with an open native popup menu
+    IModule* moduleWithPopup();
+
     bool m_runtimeVisible = true;
     bool m_built          = false;
 

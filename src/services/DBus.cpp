@@ -9,18 +9,27 @@
 
 #include <cerrno>
 #include <chrono>
+#include <functional>
+#include <vector>
 
 namespace {
     struct SBusConn {
         sd_bus*          bus     = nullptr;
         wl_event_source* source  = nullptr;
         bool             pumping = false; // reentrancy guard: sd_bus forbids recursive processing
+        bool             wanted  = false; // a consumer connected this bus at least once: keep reconnecting it
+        std::vector<std::function<void()>> reconnectCbs; // fired after a successful RECONNECT (not first connect)
     };
 
     SBusConn            g_session;
     SBusConn            g_system;
     SP<CEventLoopTimer> g_pumpTimer;
     bool                g_dead = false; // shutdown() ran: no reconnects
+
+    // forward decls: connect -> ensurePumpTimer -> (timer lambda) maybeReconnect -> connect form a cycle
+    sd_bus* connect(SBusConn& conn, bool systemBus);
+    void    ensurePumpTimer();
+    void    maybeReconnect(SBusConn& conn, bool systemBus);
 
     void disconnect(SBusConn& conn, bool flushClose) {
         if (conn.source) {
@@ -48,7 +57,10 @@ namespace {
         // -EBUSY only means we were entered recursively from within dispatch; it is NOT a broken
         // connection, so never tear down on it. Only real transport errors warrant a disconnect.
         if (ret < 0 && ret != -EBUSY)
-            disconnect(conn, false); // broken connection; next session()/system() call reconnects
+            // Broken connection: flush_close_unref CLOSES it (marks it dead) and drops our ref, then
+            // null it. The pump timer reopens a fresh private connection on the next tick, and any
+            // consumer slot still holding a ref keeps the dead object valid until that slot is unref'd.
+            disconnect(conn, true);
     }
 
     int onBusReadable(int /*fd*/, uint32_t /*mask*/, void* data) {
@@ -64,6 +76,9 @@ namespace {
         g_pumpTimer = makeShared<CEventLoopTimer>(
             std::chrono::seconds(1),
             [](SP<CEventLoopTimer> self, void*) {
+                // Self-heal first: reopen any bus that a consumer wants but that dropped, then pump.
+                maybeReconnect(g_session, false);
+                maybeReconnect(g_system, true);
                 pump(g_session);
                 pump(g_system);
                 self->updateTimeout(std::chrono::seconds(1)); // timers are one-shot: rearm
@@ -78,8 +93,11 @@ namespace {
         if (g_dead)
             return nullptr;
 
-        sd_bus*   bus = nullptr;
-        const int RET = systemBus ? sd_bus_default_system(&bus) : sd_bus_default_user(&bus);
+        sd_bus* bus = nullptr;
+        // PRIVATE connection, NOT sd_bus_default_*: a cached default that errors stays cached and dead
+        // forever (re-registering its fd never revives it), so the module would never recover. A private
+        // open() always yields a genuinely fresh connection after teardown -> reconnect actually works.
+        const int RET = systemBus ? sd_bus_open_system(&bus) : sd_bus_open_user(&bus);
         if (RET < 0 || !bus)
             return nullptr;
 
@@ -89,15 +107,33 @@ namespace {
             return nullptr;
         }
 
+        // fd is per-connection: on every (re)open this registration runs afresh with the new fd.
         conn.source = wl_event_loop_add_fd(g_pCompositor->m_wlEventLoop, FD, WL_EVENT_READABLE, onBusReadable, &conn);
         if (!conn.source) {
             sd_bus_unref(bus);
             return nullptr;
         }
 
-        conn.bus = bus;
+        conn.bus    = bus;
+        conn.wanted = true; // remember it: the pump timer keeps reopening this bus if it later drops
         ensurePumpTimer();
         return conn.bus;
+    }
+
+    // Called every pump tick. If a wanted bus is currently down, reopen it and, on success, notify
+    // consumers so they re-establish match slots + refetch on the fresh connection.
+    void maybeReconnect(SBusConn& conn, bool systemBus) {
+        if (g_dead || conn.bus || !conn.wanted)
+            return;
+        if (!connect(conn, systemBus))
+            return; // still unavailable; retry next tick
+
+        // Copy before firing: a callback may re-enter DBus (e.g. refetch -> system()).
+        const auto CBS = conn.reconnectCbs;
+        for (const auto& CB : CBS) {
+            if (CB)
+                CB();
+        }
     }
 }
 
@@ -118,12 +154,23 @@ void DBus::flush(sd_bus* bus) {
     sd_bus_flush(bus);
 }
 
+void DBus::onReconnect(bool systemBus, std::function<void()> cb) {
+    if (g_dead || !cb)
+        return;
+    (systemBus ? g_system : g_session).reconnectCbs.emplace_back(std::move(cb));
+}
+
 void DBus::shutdown() {
     g_dead = true;
     if (g_pumpTimer) {
         g_pEventLoopManager->removeTimer(g_pumpTimer);
         g_pumpTimer.reset();
     }
+    // Drop callbacks before disconnecting: nothing must fire after teardown.
+    g_session.reconnectCbs.clear();
+    g_system.reconnectCbs.clear();
+    g_session.wanted = false;
+    g_system.wanted  = false;
     disconnect(g_session, true);
     disconnect(g_system, true);
 }

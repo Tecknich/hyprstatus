@@ -45,3 +45,19 @@ std::vector<UP<IPassElement>> CTooltipPassElement::draw() {
 
     return {};
 }
+
+std::vector<UP<IPassElement>> CPopupPassElement::draw() {
+    const auto MON = m_monitor.lock();
+    if (!MON || !g_barManager)
+        return {};
+
+    // draw the popup owned by whichever module has one open on this monitor
+    for (auto& mod : g_barManager->m_modules) {
+        if (mod && mod->popupOpen() && mod->popupMonitor().lock() == MON) {
+            mod->drawPopup(MON);
+            break;
+        }
+    }
+
+    return {};
+}

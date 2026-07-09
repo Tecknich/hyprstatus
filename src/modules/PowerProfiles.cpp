@@ -35,6 +35,7 @@ namespace {
         void                  onClick(uint32_t button, const SSegment& seg, PHLMONITOR mon) override;
 
       private:
+        void        addMatch(sd_bus* bus); // (re)install the PropertiesChanged match on the given bus
         void        fetchAll();
         void        onGetAllReply(sd_bus_message* m);
         void        setProfile(const std::string& profile);
@@ -52,21 +53,58 @@ namespace {
         bool                       m_ready = false;
         std::string                m_active;
         std::vector<SProfileEntry> m_profiles; // daemon order; cycling follows it
+
+        // Low-frequency fallback poll: guarantees recovery even if a reconnect
+        // notify or PropertiesChanged is missed, and repopulates when the daemon
+        // itself restarts. Torn down (removes its event-loop timer) in the dtor.
+        UP<CModuleTimer>           m_pollTimer;
+
+        // Liveness guard for the DBus reconnect callback. That callback lives in
+        // DBus for the whole plugin, but this module is destroyed+rebuilt on
+        // config reload; the callback captures a weak ref to this and no-ops
+        // once the module (and its guard) are gone, so the stale entry can never
+        // touch freed members.
+        SP<bool>                   m_alive = makeShared<bool>(true);
     };
 
     CPowerProfilesModule::~CPowerProfilesModule() {
+        m_pollTimer.reset(); // stop the fallback poll before slots die
         m_matchSlot = sd_bus_slot_unref(m_matchSlot);
         m_callSlot  = sd_bus_slot_unref(m_callSlot);
         m_setSlot   = sd_bus_slot_unref(m_setSlot);
+        // m_alive's SP drops on member destruction -> the DBus reconnect callback no-ops thereafter.
+    }
+
+    void CPowerProfilesModule::addMatch(sd_bus* bus) {
+        // A prior slot (if any) referenced the now-dead bus: cancel it first.
+        m_matchSlot = sd_bus_slot_unref(m_matchSlot);
+        sd_bus_match_signal(bus, &m_matchSlot, PPD_DEST, PPD_PATH, PROPS_IFACE, "PropertiesChanged", sOnPropertiesChanged, this);
     }
 
     void CPowerProfilesModule::init() {
         const auto BUS = DBus::system();
         if (!BUS)
-            return; // no system bus: module stays hidden
+            return; // no system bus: module stays hidden (poll below is not armed either)
 
-        sd_bus_match_signal(BUS, &m_matchSlot, PPD_DEST, PPD_PATH, PROPS_IFACE, "PropertiesChanged", sOnPropertiesChanged, this);
+        addMatch(BUS);
         fetchAll();
+
+        // Self-heal: when the system-bus connection drops and DBus reopens it,
+        // re-add the match on the fresh bus + refetch. Guarded by m_alive so a
+        // reload-orphaned copy of this callback is a safe no-op.
+        WP<bool> weak = m_alive;
+        DBus::onReconnect(true /*system*/, [this, weak] {
+            if (!weak.lock())
+                return; // module was destroyed (e.g. config reload); do not touch it
+            const auto BUS = DBus::system();
+            if (!BUS)
+                return;
+            addMatch(BUS);
+            fetchAll();
+        });
+
+        // Fallback poll (see member comment). Primary path stays event-driven.
+        m_pollTimer = makeUnique<CModuleTimer>(std::chrono::seconds(5), [this] { fetchAll(); });
     }
 
     void CPowerProfilesModule::update() {
