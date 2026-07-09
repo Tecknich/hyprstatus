@@ -4,6 +4,11 @@ A status bar that lives **inside** the compositor. hyprstatus is a Hyprland
 plugin (`.so` loaded by hyprpm) that replaces Waybar with a bar rendered by
 Hyprland itself — the first in-compositor status bar for Hyprland.
 
+> [!WARNING]
+> This software is 99% vibe coded with Claude Fable 5, however it has been externally reviewed.
+> Use at your own discretion
+
+
 ## Why not just Waybar?
 
 | | Waybar | hyprstatus |
