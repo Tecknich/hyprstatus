@@ -1,6 +1,16 @@
 #include "Factories.hpp"
 
+#define WLR_USE_UNSTABLE
+#include <hyprland/src/Compositor.hpp>
+
+#include <wayland-server-core.h>
+
+#include <linux/netlink.h>
+#include <sys/socket.h>
+#include <unistd.h>
+
 #include <algorithm>
+#include <cerrno>
 #include <chrono>
 #include <cmath>
 #include <cstdlib>
@@ -9,6 +19,7 @@
 #include <fstream>
 #include <map>
 #include <optional>
+#include <string_view>
 
 #include "../util/Format.hpp"
 
@@ -47,10 +58,28 @@ namespace {
       public:
         explicit CBatteryModule(const SModuleConfig& cfg) : IModule(cfg) {}
 
+        // MANDATORY: a live fd source after unload dereferences freed memory and
+        // crashes the compositor. Remove the wl source BEFORE closing the fd.
+        ~CBatteryModule() override {
+            if (m_ueventSrc) {
+                wl_event_source_remove(m_ueventSrc);
+                m_ueventSrc = nullptr;
+            }
+            if (m_ueventFd >= 0) {
+                close(m_ueventFd);
+                m_ueventFd = -1;
+            }
+        }
+
         void init() override {
             discover();
             const auto INTERVAL = std::max<int64_t>(1, optInt("interval", 30));
             m_timer             = makeUnique<CModuleTimer>(std::chrono::seconds(INTERVAL), [this] { update(); });
+            // Kernel uevent listener: power_supply changes (AC plug/unplug) fire an
+            // immediate update() instead of waiting for the next poll tick. The poll
+            // above stays as a slow fallback for %/time refresh. Best-effort: any
+            // failure here just skips the listener; the module still works polled.
+            setupUevent();
             update();
         }
 
@@ -175,6 +204,55 @@ namespace {
         }
 
       private:
+        // Raw NETLINK_KOBJECT_UEVENT socket (group 1 = kernel broadcast). No
+        // libudev dependency. Best-effort: on any failure we skip the listener.
+        void setupUevent() {
+            const int FD = socket(PF_NETLINK, SOCK_DGRAM | SOCK_CLOEXEC | SOCK_NONBLOCK, NETLINK_KOBJECT_UEVENT);
+            if (FD < 0)
+                return;
+
+            struct sockaddr_nl nls{};
+            nls.nl_family = AF_NETLINK;
+            nls.nl_groups = 1; // udev/kernel broadcast group
+            nls.nl_pid    = 0;
+            if (bind(FD, reinterpret_cast<struct sockaddr*>(&nls), sizeof(nls)) < 0) {
+                close(FD);
+                return;
+            }
+
+            wl_event_source* src = wl_event_loop_add_fd(g_pCompositor->m_wlEventLoop, FD, WL_EVENT_READABLE, &onUevent, this);
+            if (!src) {
+                close(FD);
+                return;
+            }
+
+            m_ueventFd  = FD;
+            m_ueventSrc = src;
+        }
+
+        // Drain the socket (NONBLOCK -> read until EAGAIN); if any message payload
+        // mentions power_supply, coalesce to a single update(). Never blocks.
+        static int onUevent(int fd, uint32_t /*mask*/, void* data) {
+            auto* self     = static_cast<CBatteryModule*>(data);
+            bool  relevant = false;
+            char  buf[8192];
+            for (;;) {
+                const ssize_t N = recv(fd, buf, sizeof(buf), 0);
+                if (N > 0) {
+                    // scan raw bytes: uevent payloads are NUL-separated k=v lines
+                    if (std::string_view(buf, (size_t)N).find("power_supply") != std::string_view::npos)
+                        relevant = true;
+                    continue;
+                }
+                if (N < 0 && errno == EINTR)
+                    continue;
+                break; // EAGAIN/EWOULDBLOCK = drained, or a hard error
+            }
+            if (relevant)
+                self->update();
+            return 0;
+        }
+
         void discover() {
             if (const auto BAT = opt("bat"); !BAT.empty()) {
                 const auto      PATH = std::string(POWER_SUPPLY_DIR) + "/" + BAT;
@@ -190,6 +268,8 @@ namespace {
         }
 
         UP<CModuleTimer>                   m_timer;
+        int                                m_ueventFd  = -1;
+        wl_event_source*                   m_ueventSrc = nullptr;
         std::string                        m_batPath, m_adapterPath;
         bool                               m_hidden = true;
         SSegment                           m_segment;

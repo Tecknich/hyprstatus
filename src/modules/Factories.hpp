@@ -18,6 +18,7 @@ UP<IModule> makePowerProfilesModule(const SModuleConfig&);
 UP<IModule> makeLanguageModule(const SModuleConfig&);
 UP<IModule> makeSubmapModule(const SModuleConfig&);
 UP<IModule> makeTrayModule(const SModuleConfig&);
+UP<IModule> makeNotificationsModule(const SModuleConfig&);
 UP<IModule> makeCustomModule(const SModuleConfig&);
 
 // Dispatch by module name: native names map to their factories; names declared

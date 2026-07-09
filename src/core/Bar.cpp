@@ -157,7 +157,8 @@ void CBar::draw() {
             if (!mod || mod->hidden(MON))
                 continue;
 
-            const double PAD = (double)mod->optInt("padding", g_cfg.padding->value());
+            const double PAD     = (double)mod->optInt("padding", g_cfg.padding->value());
+            const bool   MODBOLD = mod->optBool("bold", false);
 
             std::vector<SLaidSegment> laid;
             for (auto& seg : mod->segments(MON)) {
@@ -177,7 +178,7 @@ void CBar::draw() {
                 if (seg.icon)
                     contentW = ICONSIZE;
                 else {
-                    L.tex = TextCache::get(seg.text, col, FONTPX, seg.bold);
+                    L.tex = TextCache::get(seg.text, col, FONTPX, seg.bold || MODBOLD);
                     if (!L.tex || L.tex->m_texID == 0)
                         continue;
                     contentW = L.tex->m_size.x / SCALE;
@@ -245,6 +246,37 @@ void CBar::draw() {
 
     auto drawGroup = [&](std::vector<std::vector<SLaidSegment>>& group) {
         for (auto& mod : group) {
+            if (mod.empty())
+                continue;
+
+            // ---- optional per-module pill (rounded background + border) ----
+            // Drawn BEFORE the module's glyphs so text sits on top. The extent
+            // spans from the first segment's left to the last segment's right
+            // (logical px, monitor-local), inset vertically by box-margin.
+            if (IModule* MODULE = mod.front().module) {
+                const std::string BGSTR     = MODULE->opt("background");
+                const std::string BORDERSTR = MODULE->opt("box-border");
+                if (!BGSTR.empty() || !BORDERSTR.empty()) {
+                    const double BOXMARGIN = (double)MODULE->optInt("box-margin", 4);
+                    const int    BOXROUND  = (int)std::round((double)MODULE->optInt("box-rounding", (int64_t)g_cfg.rounding->value()) * SCALE);
+
+                    const double PILLX0 = BARLOCAL.x + mod.front().x;
+                    const double PILLX1 = BARLOCAL.x + mod.back().x + mod.back().w;
+                    const CBox   PILL   = CBox{PILLX0, BARLOCAL.y + BOXMARGIN, PILLX1 - PILLX0, BARLOCAL.h - 2 * BOXMARGIN}.scale(SCALE).round();
+
+                    if (PILL.w >= 1 && PILL.h >= 1) {
+                        if (!BGSTR.empty())
+                            if (const auto C = parseColorString(BGSTR); C.has_value())
+                                g_pHyprOpenGL->renderRect(PILL, *C, {.round = BOXROUND, .roundingPower = 2.F});
+
+                        if (!BORDERSTR.empty())
+                            if (const auto C = parseColorString(BORDERSTR); C.has_value())
+                                g_pHyprOpenGL->renderBorder(PILL, Config::CGradientValueData{*C},
+                                                            {.round = BOXROUND, .roundingPower = 2.F, .borderSize = std::max(1, (int)std::round(SCALE))});
+                    }
+                }
+            }
+
             for (auto& L : mod) {
                 m_hitRegions.push_back(SHitRegion{
                     .box     = {BARLOCAL.x + L.x, BARLOCAL.y, L.w, BARLOCAL.h},
