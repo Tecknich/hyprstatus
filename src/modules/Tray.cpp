@@ -8,6 +8,7 @@
 #include <librsvg/rsvg.h>
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstring>
 #include <filesystem>
@@ -29,6 +30,7 @@
 #include "../render/TextCache.hpp"
 #include "../services/DBus.hpp"
 #include "../services/MainThread.hpp"
+#include "../util/Format.hpp"
 
 using namespace Render::GL;
 
@@ -71,7 +73,7 @@ namespace {
         CTrayModule* owner = nullptr;
         std::string  busName, objectPath, service; // service = busName + objectPath (registry form)
 
-        std::string              status, iconName, attentionIconName, iconThemePath, title, menuPath;
+        std::string              status, iconName, attentionIconName, iconThemePath, id, title, menuPath;
         std::string              tooltipTitle, tooltipBody;
         bool                     itemIsMenu = false;
         std::vector<STrayPixmap> pixmaps;
@@ -112,6 +114,13 @@ namespace {
         return true;
     }
 
+    // ASCII-lowercase a copy, for case-insensitive `hide` token matching.
+    std::string toLower(std::string s) {
+        for (char& c : s)
+            c = (char)std::tolower((unsigned char)c);
+        return s;
+    }
+
     // ---- com.canonical.dbusmenu model ----
 
     struct SMenuEntry {
@@ -123,6 +132,9 @@ namespace {
         std::string             toggleType;            // "" | "checkmark" | "radio"
         int32_t                 toggleState = -1;      // 0 off, 1 on, -1 indeterminate
         bool                    hasSubmenu  = false;   // children-display == "submenu"
+        std::string             iconName;              // "icon-name": themed icon name
+        std::vector<uint8_t>    iconData;              // "icon-data": raw PNG bytes
+        SP<Render::ITexture>    iconTex;               // built OFF the render path, drawn cached
         std::vector<SMenuEntry> children;
     };
 
@@ -185,6 +197,20 @@ namespace {
         } else
             sd_bus_message_skip(m, "v");
     }
+    // read one property variant holding a byte array ("ay", e.g. icon-data raw
+    // PNG). Defensive: caps the copied size (menu icons are tiny); on any type
+    // mismatch skip the variant without desyncing the message stream.
+    void readMenuBytes(sd_bus_message* m, std::vector<uint8_t>& out) {
+        constexpr size_t MAX_ICON_DATA = 1u * 1024 * 1024; // 1 MiB
+        if (sd_bus_message_enter_container(m, SD_BUS_TYPE_VARIANT, "ay") > 0) {
+            const void* ptr = nullptr;
+            size_t      sz  = 0;
+            if (sd_bus_message_read_array(m, 'y', &ptr, &sz) >= 0 && ptr && sz > 0 && sz <= MAX_ICON_DATA)
+                out.assign((const uint8_t*)ptr, (const uint8_t*)ptr + sz);
+            sd_bus_message_exit_container(m);
+        } else
+            sd_bus_message_skip(m, "v");
+    }
 
     // Defense-in-depth cap on dbusmenu nesting: a malicious client could ship a
     // pathologically deep layout to blow our stack. Beyond this we stop
@@ -224,6 +250,10 @@ namespace {
                     readMenuBool(m, out.visible);
                 else if (K == "toggle-state")
                     readMenuInt(m, out.toggleState);
+                else if (K == "icon-name")
+                    readMenuStr(m, out.iconName, false);
+                else if (K == "icon-data")
+                    readMenuBytes(m, out.iconData);
                 else
                     sd_bus_message_skip(m, "v");
                 sd_bus_message_exit_container(m); // dict entry
@@ -271,6 +301,41 @@ namespace {
 
     cairo_surface_t* surfaceFromPNG(const std::string& path, int px) {
         cairo_surface_t* src = cairo_image_surface_create_from_png(path.c_str());
+        if (!src)
+            return nullptr;
+        if (cairo_surface_status(src) != CAIRO_STATUS_SUCCESS) {
+            cairo_surface_destroy(src);
+            return nullptr;
+        }
+        const double W = cairo_image_surface_get_width(src);
+        const double H = cairo_image_surface_get_height(src);
+        if (W < 1 || H < 1) {
+            cairo_surface_destroy(src);
+            return nullptr;
+        }
+        return scaleOnto(src, W, H, px);
+    }
+
+    // cairo PNG read closure over an in-memory byte vector (dbusmenu icon-data).
+    struct SPngReader {
+        const uint8_t* data   = nullptr;
+        size_t         size   = 0;
+        size_t         offset = 0;
+    };
+    cairo_status_t pngReadFromMem(void* closure, unsigned char* out, unsigned int length) {
+        auto* r = static_cast<SPngReader*>(closure);
+        if (!r || r->offset + length > r->size)
+            return CAIRO_STATUS_READ_ERROR;
+        std::memcpy(out, r->data + r->offset, length);
+        r->offset += length;
+        return CAIRO_STATUS_SUCCESS;
+    }
+
+    cairo_surface_t* surfaceFromPNGBytes(const std::vector<uint8_t>& bytes, int px) {
+        if (bytes.empty())
+            return nullptr;
+        SPngReader       reader{bytes.data(), bytes.size(), 0};
+        cairo_surface_t* src = cairo_image_surface_create_from_png_stream(pngReadFromMem, &reader);
         if (!src)
             return nullptr;
         if (cairo_surface_status(src) != CAIRO_STATUS_SUCCESS) {
@@ -430,8 +495,10 @@ namespace {
             out.reserve(m_items.size());
             for (size_t i = 0; i < m_items.size(); ++i) {
                 auto* const ITEM = m_items[i].get();
-                SSegment    seg;
-                seg.id   = i;
+                if (itemHidden(ITEM)) // `hide` / `hide-passive` config filters
+                    continue;
+                SSegment seg;
+                seg.id   = i; // index into m_items: onClick/onScroll rely on it
                 seg.icon = iconFor(ITEM, PX);
                 if (!seg.icon)
                     seg.text = "?";
@@ -448,7 +515,12 @@ namespace {
         }
 
         bool hidden(PHLMONITOR) override {
-            return m_items.empty();
+            // hide the whole module when there are no items OR every item is
+            // filtered out by the `hide` / `hide-passive` options.
+            for (const auto& it : m_items)
+                if (!itemHidden(it.get()))
+                    return false;
+            return true;
         }
 
         // every tray item is clickable (Activate / ContextMenu / native menu)
@@ -598,7 +670,16 @@ namespace {
                 fallbackContextMenu();
                 return;
             }
-            m_popupEntries     = std::move(root.children);
+            m_popupEntries = std::move(root.children);
+            // Build menu-item icon textures HERE (a D-Bus reply, NOT the render
+            // pass) so filesystem I/O + createTexture are safe. drawPopup only
+            // draws the cached iconTex; it never builds one. Walk the whole tree
+            // (top level + submenu children). Size the icon to ~the font size on
+            // the popup's monitor.
+            const auto   MON   = m_popupMon.lock();
+            const double SCALE = MON ? MON->m_scale : 1.0;
+            const int    PX    = std::max(1, (int)std::lround((double)g_cfg.fontSize->value() * SCALE));
+            buildMenuIcons(m_popupEntries, PX);
             m_popupHoveredTop  = -1;
             m_popupExpandedTop = -1;
             m_popupHoveredSub  = -1;
@@ -741,6 +822,7 @@ namespace {
             item->iconName.clear();
             item->attentionIconName.clear();
             item->iconThemePath.clear();
+            item->id.clear();
             item->title.clear();
             item->menuPath.clear();
             item->tooltipTitle.clear();
@@ -756,7 +838,7 @@ namespace {
                     break;
                 const std::string KEY = key ? key : "";
 
-                if (KEY == "Status" || KEY == "IconName" || KEY == "AttentionIconName" || KEY == "IconThemePath" || KEY == "Title") {
+                if (KEY == "Status" || KEY == "IconName" || KEY == "AttentionIconName" || KEY == "IconThemePath" || KEY == "Id" || KEY == "Title") {
                     if (sd_bus_message_enter_container(m, SD_BUS_TYPE_VARIANT, "s") > 0) {
                         const char* val = nullptr;
                         sd_bus_message_read(m, "s", &val);
@@ -770,6 +852,8 @@ namespace {
                             item->attentionIconName = V;
                         else if (KEY == "IconThemePath")
                             item->iconThemePath = V;
+                        else if (KEY == "Id")
+                            item->id = V;
                         else
                             item->title = V;
                     } else
@@ -861,6 +945,32 @@ namespace {
         std::vector<UP<STrayItem>> m_items;
 
       private:
+        // config-driven per-item visibility (applied in segments() + hidden()).
+        //   hide          : space/comma-separated tokens; hide the item if its Id
+        //                   OR Title contains (case-insensitive) any token.
+        //   hide-passive  : bool (default false); hide Passive items entirely
+        //                   instead of the default 50%-alpha dim.
+        bool itemHidden(const STrayItem* item) const {
+            if (item->status == "Passive" && optBool("hide-passive", false))
+                return true;
+            const auto HIDE = opt("hide");
+            if (HIDE.empty())
+                return false;
+            std::string list = HIDE;
+            for (char& c : list) // accept both space- and comma-separated lists
+                if (c == ',')
+                    c = ' ';
+            const std::string ID = toLower(item->id), TITLE = toLower(item->title);
+            for (const auto& TOK : Fmt::split(list, ' ')) {
+                const std::string T = toLower(TOK);
+                if (T.empty())
+                    continue;
+                if (ID.find(T) != std::string::npos || TITLE.find(T) != std::string::npos)
+                    return true;
+            }
+            return false;
+        }
+
         // fix 2: PURE cached lookup — MUST NOT touch the filesystem or build a
         // texture (segments() calls this every frame). On a miss (a monitor
         // scale that wasn't built in applyProps, e.g. hotplug/rescale) show no
@@ -944,15 +1054,54 @@ namespace {
             return tex;
         }
 
+        // build one dbusmenu entry's icon texture. Runs OFF the render path (from
+        // handleMenuLayout, a D-Bus reply) so filesystem I/O + createTexture are
+        // safe. Resolution order: themed icon-name file, then raw icon-data PNG
+        // bytes. Every cairo surface is freed on every path.
+        void buildMenuIcon(SMenuEntry& e, int px) {
+            e.iconTex = nullptr;
+            if (px < 1)
+                return;
+            cairo_surface_t* surf = nullptr;
+            if (!e.iconName.empty()) {
+                if (const auto FILE = findIconFileByName(e.iconName, "", px); !FILE.empty())
+                    surf = FILE.ends_with(".svg") ? surfaceFromSVG(FILE, px) : surfaceFromPNG(FILE, px);
+            }
+            if (!surf && !e.iconData.empty())
+                surf = surfaceFromPNGBytes(e.iconData, px);
+            if (!surf)
+                return;
+            cairo_surface_flush(surf);
+            e.iconTex = g_pHyprRenderer->createTexture(surf); // safe outside the render pass
+            cairo_surface_destroy(surf);
+        }
+
+        // build icon textures for a whole parsed menu tree (top level + children).
+        void buildMenuIcons(std::vector<SMenuEntry>& entries, int px) {
+            for (auto& e : entries) {
+                buildMenuIcon(e, px);
+                if (!e.children.empty())
+                    buildMenuIcons(e.children, px);
+            }
+        }
+
         // full index.theme parsing deliberately skipped: fixed-size + scalable
         // dirs across the common freedesktop contexts cover real tray icons
         // (app icons live in apps/, bluetooth/network status icons in status/,
         // etc.), plus the -symbolic variant many status icons ship only as.
+        // item-specific caller: pick the icon name (the attention icon under
+        // NeedsAttention when provided) then run the shared theme search below.
         std::string findIconFile(const STrayItem* item, int px) {
-            // NeedsAttention prefers the attention icon when the item provides one
             std::string name = item->iconName;
             if (item->status == "NeedsAttention" && !item->attentionIconName.empty())
                 name = item->attentionIconName;
+            return findIconFileByName(name, item->iconThemePath, px);
+        }
+
+        // shared freedesktop icon-theme search core, used by both the tray-item
+        // path above and the dbusmenu menu-item icon-name path. iconThemePath is
+        // an optional item-provided flat icon dir (empty for menu items).
+        std::string findIconFileByName(const std::string& name, const std::string& iconThemePath, int px) {
             if (name.empty())
                 return "";
 
@@ -986,10 +1135,10 @@ namespace {
                 names.emplace_back(name + "-symbolic");
 
             // 1) the item's own IconThemePath (a flat dir of icon files)
-            if (!item->iconThemePath.empty()) {
+            if (!iconThemePath.empty()) {
                 for (const auto& N : names)
                     for (const auto* EXT : EXTS)
-                        if (const auto P = item->iconThemePath + "/" + N + EXT; EXISTS(P))
+                        if (const auto P = iconThemePath + "/" + N + EXT; EXISTS(P))
                             return P;
             }
 
@@ -1066,7 +1215,7 @@ namespace {
             }
             bool ok = sd_bus_message_append(msg, "ii", 0, -1) >= 0;
             ok      = ok && sd_bus_message_open_container(msg, SD_BUS_TYPE_ARRAY, "s") >= 0;
-            for (const char* P : {"label", "enabled", "visible", "type", "toggle-type", "toggle-state", "children-display"})
+            for (const char* P : {"label", "enabled", "visible", "type", "toggle-type", "toggle-state", "children-display", "icon-name", "icon-data"})
                 ok = ok && sd_bus_message_append(msg, "s", P) >= 0;
             ok = ok && sd_bus_message_close_container(msg) >= 0;
             if (!ok || sd_bus_call_async(m_bus, &m_slotMenuLayout, msg, onMenuLayout, this, 0) < 0) {
@@ -1414,8 +1563,19 @@ namespace {
                         g_pHyprOpenGL->renderRect(hl, HL, {.round = std::max(0, ROUNDING / 2), .roundingPower = 2.F});
                 }
 
-                // toggle state marker in the left gutter
-                if ((E.toggleType == "checkmark" || E.toggleType == "radio") && E.toggleState == 1) {
+                // left gutter: a menu-item icon (icon-name / icon-data) takes
+                // precedence over the toggle marker (menus rarely carry both).
+                // iconTex is built off the render path in handleMenuLayout; here
+                // we only draw the cached texture.
+                if (E.iconTex && E.iconTex->m_texID) {
+                    const double IS = std::min(fontLogical, (double)GUTTER); // icon slot (logical)
+                    const double ix = ox + PAD_X + (GUTTER - IS) / 2.0;
+                    const double iy = ry + (RH - IS) / 2.0;
+                    const CBox   ib = CBox{ix, iy, IS, IS}.scale(SCALE).round();
+                    if (ib.w >= 1 && ib.h >= 1)
+                        g_pHyprOpenGL->renderTexture(E.iconTex, ib, {.a = E.enabled ? 1.F : 0.5F});
+                } else if ((E.toggleType == "checkmark" || E.toggleType == "radio") && E.toggleState == 1) {
+                    // toggle state marker in the left gutter
                     const double CS = std::max(4.0, fontLogical * 0.45);
                     const double mx = ox + PAD_X + (GUTTER - CS) / 2.0;
                     const double my = ry + (RH - CS) / 2.0;

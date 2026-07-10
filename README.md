@@ -99,9 +99,8 @@ Waybar option names (`format`, `format-icons.<key>`, `states.*`, `interval`,
 
 ## Known limitations
 
-- **Tray menus** render natively (DBusMenu popups), including submenus,
-  separators, and checkboxes, but menu-item *icons* are not drawn and nesting
-  is limited to two levels.
+- **Tray menus** render natively (DBusMenu popups) with per-item icons,
+  submenus, separators, and checkboxes; nesting is limited to two levels.
 - The bar auto-hides over fullscreen windows by default (`hide_on_fullscreen`).
 - While a Hyprland config-error banner is visible it shares the reserved-area
   slot with the bar; layout normalizes as soon as the error is fixed.

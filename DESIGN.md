@@ -150,7 +150,7 @@ Waybar-compatible module option names (`format`, `interval`, `on-click`,
 
 Shipped since v1: DBusMenu popups, native notifications module, per-module box
 styling, colored calendar. Roadmap: native MPRIS, per-module bar instances,
-sliding animations, `hyprstatus-rule` per-monitor overrides, menu-item icons.
+sliding animations, `hyprstatus-rule` per-monitor overrides, >2-level menus.
 
 ## Class → color
 
