@@ -29,8 +29,9 @@ namespace {
         // display fields (guarded by mtx)
         int         volumePct = 0;
         bool        muted     = false;
-        bool        bluetooth = false;
-        std::string portKind  = "default"; // speaker | headphone | hdmi | default
+        bool        bluetooth  = false;
+        bool        headphones = false;    // wired or bluetooth headphones/headset
+        std::string portKind   = "default"; // speaker | headphone | hdmi | default
         std::string desc;
         std::string sinkName;
         pa_cvolume  cv{};
@@ -80,14 +81,26 @@ namespace {
             bt = (API && std::string_view{API} == "bluez5") || (BUS && std::string_view{BUS} == "bluetooth");
         }
 
+        // "headphones" = a wired headphone port, OR a device whose form factor is
+        // a headphone/headset/earbud, OR any other bluetooth output that isn't
+        // explicitly a speaker-class device (AirPods often report no form factor).
+        const char* FF = i->proplist ? pa_proplist_gets(i->proplist, PA_PROP_DEVICE_FORM_FACTOR) : nullptr;
+        const std::string_view FORMFACTOR = FF ? FF : "";
+        const bool             FF_HEADPHONE =
+            FORMFACTOR == "headphone" || FORMFACTOR == "headset" || FORMFACTOR == "hands-free" || FORMFACTOR == "earpiece";
+        const bool FF_SPEAKER = FORMFACTOR == "speaker" || FORMFACTOR == "hifi" || FORMFACTOR == "tv" ||
+            FORMFACTOR == "car" || FORMFACTOR == "handset";
+        const bool headphones = kind == "headphone" || FF_HEADPHONE || (bt && !FF_SPEAKER);
+
         {
             std::lock_guard lk(S->mtx);
             if (S->teardown)
                 return;
-            S->volumePct = (int)std::lround(pa_cvolume_avg(&i->volume) * 100.0 / PA_VOLUME_NORM);
-            S->muted     = i->mute;
-            S->bluetooth = bt;
-            S->portKind  = kind;
+            S->volumePct  = (int)std::lround(pa_cvolume_avg(&i->volume) * 100.0 / PA_VOLUME_NORM);
+            S->muted      = i->mute;
+            S->bluetooth  = bt;
+            S->headphones = headphones;
+            S->portKind   = kind;
             S->desc      = i->description ? i->description : "";
             S->sinkName  = NAME;
             S->cv        = i->volume;
@@ -226,7 +239,7 @@ namespace {
 
         std::vector<SSegment> segments(PHLMONITOR) override {
             int         volume = 0;
-            bool        muted = false, bt = false, ready = false;
+            bool        muted = false, bt = false, hp = false, ready = false;
             std::string kind, desc;
             {
                 std::lock_guard lk(m_state->mtx);
@@ -234,6 +247,7 @@ namespace {
                 volume = m_state->volumePct;
                 muted  = m_state->muted;
                 bt     = m_state->bluetooth;
+                hp     = m_state->headphones;
                 kind   = m_state->portKind;
                 desc   = m_state->desc;
             }
@@ -246,10 +260,14 @@ namespace {
             if (muted) {
                 fmt = opt("format-muted", DEFAULTFMT);
                 cls = "muted";
-            } else if (bt)
+            } else if (bt && !hp)
+                // BT speakers keep the bluetooth format; BT headphones fall through
+                // to the main format so the headphone glyph shows left of {volume}.
                 fmt = opt("format-bluetooth", DEFAULTFMT);
 
-            const auto ICON = opt("format-icons." + kind, opt("format-icons.default", ""));
+            // headphones (wired or bluetooth) always resolve to the headphone glyph
+            const std::string ICONKEY = hp ? "headphone" : kind;
+            const auto        ICON    = opt("format-icons." + ICONKEY, opt("format-icons.default", ""));
             const auto VOL  = std::to_string(volume);
             Hyprutils::String::replaceInString(fmt, "{icon}", ICON);
             Hyprutils::String::replaceInString(fmt, "{volume}", VOL);
