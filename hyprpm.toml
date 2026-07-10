@@ -1,6 +1,13 @@
 [repository]
 name = "hyprstatus"
 authors = ["Tecknich"]
+# Map each supported Hyprland release commit -> the hyprstatus commit that builds
+# against it. `hyprpm add` resets to the pinned commit for the running Hyprland,
+# so a user on a matching release builds a known-good tree instead of failing on
+# API drift. Bump this per Hyprland release (newest first).
+commit_pins = [
+    ["a0136d8c04687bb36eb8a28eb9d1ff92aea99704", "a46064e70bbea058872cad5f157a2a5e9f07f2d1"], # Hyprland 0.55.4
+]
 
 [hyprstatus]
 description = "Compositor-rendered status bar for Hyprland — a Waybar replacement that lives inside the compositor"
