@@ -1,0 +1,51 @@
+name: build
+
+# Builds hyprstatus against the Hyprland headers shipped by Arch (the same
+# headers hyprpm builds against on an end-user machine). A failure here is the
+# signal that Hyprland's internal API drifted and the plugin needs an update
+# + a new commit_pin. Runs on push, PRs, and weekly to catch upstream drift.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "0 6 * * 1" # Mondays 06:00 UTC
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container: archlinux:latest
+    steps:
+      - name: Install toolchain + Hyprland headers + deps
+        run: |
+          pacman -Syu --noconfirm --needed \
+            base-devel cmake git pkgconf gcc \
+            hyprland \
+            pango cairo librsvg libpulse systemd-libs \
+            pixman libdrm wayland libxkbcommon
+
+      - uses: actions/checkout@v4
+
+      - name: Report versions
+        run: |
+          Hyprland --version || true
+          pkg-config --modversion hyprland || true
+          gcc --version | head -1
+
+      - name: Configure
+        run: cmake --no-warn-unused-cli -DCMAKE_BUILD_TYPE=Release -B build -S .
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      - name: Verify plugin artifact + ABI hygiene
+        run: |
+          test -f build/hyprstatus.so
+          # required exported plugin entry points
+          nm -D build/hyprstatus.so | grep -q ' T pluginInit'
+          nm -D build/hyprstatus.so | grep -q ' T pluginAPIVersion'
+          nm -D build/hyprstatus.so | grep -q ' T pluginExit'
+          # STB_GNU_UNIQUE symbols break dlclose/plugin unload — there must be none
+          test "$(nm build/hyprstatus.so | grep -c ' u ')" = "0"
+          echo "hyprstatus.so OK"

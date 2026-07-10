@@ -108,8 +108,25 @@ Waybar option names (`format`, `format-icons.<key>`, `states.*`, `interval`,
 - One bar; per-monitor different layouts not yet supported (`monitors = `
   restricts which outputs show the bar).
 
-## Compatibility
+## Compatibility & support
 
-Built and tested against Hyprland **0.55.4**. Plugins are ABI-locked to the
-exact running compositor build — always install through `hyprpm`, which builds
-against your running version's headers.
+Hyprland plugins are ABI-locked to the exact running compositor build and this
+one leans heavily on Hyprland's internal API, so it must be built against the
+version you run — always install via `hyprpm`, which does that for you. The
+`hyprpm.toml` `commit_pins` map each supported Hyprland release to a known-good
+`hyprstatus` commit; a Hyprland version without a pin builds against repo HEAD
+and may fail on API drift (open an issue with your `hyprctl version`).
+
+| Hyprland | hyprstatus | status |
+|---|---|---|
+| 0.55.4 | pinned (`commit_pins`) | developed + tested against this |
+
+CI ([`.github/workflows/build.yml`](.github/workflows/build.yml)) builds against
+the Hyprland headers Arch ships, on every push/PR and weekly, so upstream API
+drift surfaces as a red build rather than a broken install.
+
+**Tested environment:** Arch Linux, single monitor, PipeWire (`pipewire-pulse`),
+`power-profiles-daemon`, SwayNotificationCenter, and appindicator/SNI tray apps
+(NetworkManager, blueman, NordVPN). Other distros, notification daemons, and
+multi-monitor setups are expected to work but are less exercised — see **Known
+limitations** above. Bug reports welcome.
