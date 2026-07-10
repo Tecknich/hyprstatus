@@ -218,6 +218,22 @@ namespace Fmt {
         return out;
     }
 
+    std::string escapeMarkup(const std::string& s) {
+        std::string o;
+        o.reserve(s.size());
+        for (const char C : s) {
+            switch (C) {
+                case '&': o += "&amp;"; break;
+                case '<': o += "&lt;"; break;
+                case '>': o += "&gt;"; break;
+                case '"': o += "&quot;"; break;
+                case '\'': o += "&#39;"; break;
+                default: o += C; break;
+            }
+        }
+        return o;
+    }
+
     namespace {
         // Escape the three Pango-markup metacharacters. Our calendar text is
         // digits/spaces/letters, but strftime month names come from the locale,
@@ -249,8 +265,11 @@ namespace Fmt {
             t.tm_hour  = 12; // avoid DST edges shifting the date
             t.tm_isdst = -1;
             mktime(&t);
-            char buf[8];
-            strftime(buf, sizeof(buf), "%V", &t);
+            // strftime returns 0 and leaves buf indeterminate on overflow; don't
+            // atoi() an indeterminate buffer.
+            char buf[8] = {};
+            if (strftime(buf, sizeof(buf), "%V", &t) == 0)
+                return 0;
             return std::atoi(buf);
         }
 
@@ -320,8 +339,12 @@ namespace Fmt {
         const int SUNCOL = firstDayColumn(YEAR, MON0);
         const int DIM    = daysInMonth(YEAR, MON0);
 
-        char title[64];
-        strftime(title, sizeof(title), "%B %Y", &tmNow);
+        // strftime returns 0 (and leaves the buffer INDETERMINATE) when the
+        // formatted result doesn't fit; reading it as a C-string then is an OOB
+        // read. Zero-init and fall back to a numeric title on 0.
+        char title[64] = {};
+        if (strftime(title, sizeof(title), "%B %Y", &tmNow) == 0)
+            std::snprintf(title, sizeof(title), "%04d-%02d", YEAR, MON0 + 1);
 
         // whole grid wrapped in one FG span; title/weeknum/today override it.
         std::string out = "<span foreground='" + fgHex + "'>";
@@ -349,7 +372,10 @@ namespace Fmt {
             const int     SUNCOL = firstDayColumn(year, mon0);
             const int     DIM    = daysInMonth(year, mon0);
 
-            char name[32];
+            // strftime returns 0 and leaves name indeterminate on overflow;
+            // zero-init and fall back to a numeric month so it stays a valid,
+            // NUL-terminated C-string before the std::string(name) read below.
+            char name[32] = {};
             {
                 struct tm t{};
                 t.tm_year  = year - 1900;
@@ -358,7 +384,8 @@ namespace Fmt {
                 t.tm_hour  = 12;
                 t.tm_isdst = -1;
                 mktime(&t);
-                strftime(name, sizeof(name), "%B", &t);
+                if (strftime(name, sizeof(name), "%B", &t) == 0)
+                    std::snprintf(name, sizeof(name), "%d", mon0 + 1);
             }
 
             std::array<std::string, 8> lines;

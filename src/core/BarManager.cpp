@@ -159,7 +159,10 @@ void CBarManager::shutdown() {
     // close any open popup before tearing its owning module down
     if (auto* const POPMOD = moduleWithPopup())
         POPMOD->closePopup();
-    m_modules.clear(); // FIRST: module dtors join threads / remove timers and fd sources
+    // clear RT-signal subscriptions (which capture module `this`) BEFORE the
+    // module dtors run, so no stale callback can fire into a freed module.
+    RtSignals::unsubscribeAll();
+    m_modules.clear(); // module dtors join threads / remove timers and fd sources
     m_bars.clear();
     clearReservedAll();
 
@@ -194,8 +197,12 @@ void CBarManager::shutdown() {
 void CBarManager::rebuild() {
     m_bars.clear();
     m_layout = {};
-    m_modules.clear();
+    // unsubscribe RT signals BEFORE destroying modules: a module's signal
+    // callback captures `this`, so clearing subscriptions first guarantees no
+    // stale callback can reference a freed module (see the invariant documented
+    // in Custom.cpp). Ordering, not the single-threaded loop, is the guarantee.
     RtSignals::unsubscribeAll();
+    m_modules.clear();
     TextCache::clear();
     MarkupText::clear(); // colors may have changed on reload; drop cached calendars
 

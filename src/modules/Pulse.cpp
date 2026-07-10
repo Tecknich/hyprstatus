@@ -281,8 +281,10 @@ namespace {
                 return;
             }
 
-            const int64_t STEP = optInt("scroll-step", 5);
-            const int64_t MAX  = optInt("max-volume", 100);
+            // floor both at 0: a negative max-volume makes hi<lo in std::clamp
+            // below, which is UNDEFINED BEHAVIOR; a negative step is nonsense too.
+            const int64_t STEP = std::max<int64_t>(0, optInt("scroll-step", 5));
+            const int64_t MAX  = std::max<int64_t>(0, optInt("max-volume", 100));
 
             pa_cvolume  cv{};
             std::string sink;

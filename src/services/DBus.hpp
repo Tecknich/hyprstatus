@@ -2,6 +2,7 @@
 #include <systemd/sd-bus.h>
 
 #include <functional>
+#include <string>
 
 // Shared sd-bus connections pumped on the compositor's wayland event loop
 // (fd readable -> sd_bus_process loop) plus a coarse periodic pump for
@@ -25,11 +26,14 @@ namespace DBus {
     // (never on the first connect). The fd and bus object change on reconnect,
     // so any match slots a consumer added referenced the now-dead bus: use this
     // to unref+re-add them on the fresh bus and refetch state. Callbacks run on
-    // the main thread, are kept for the plugin's lifetime, and are cleared by
-    // shutdown(). There is no unregister, so a consumer whose lifetime is
-    // shorter than the plugin (e.g. a module rebuilt on config reload) MUST
-    // capture a weak liveness guard and no-op when it has been destroyed.
-    void onReconnect(bool systemBus, std::function<void()> cb);
+    // the main thread and are cleared by shutdown().
+    //
+    // `key` identifies the consumer (e.g. the module name): re-registering with
+    // the same key REPLACES the prior callback, so a module rebuilt on every
+    // config reload never accumulates stale entries. The callback should still
+    // capture a weak liveness guard (a module can outlive a single reconnect
+    // cycle only within one instance's life).
+    void onReconnect(bool systemBus, const std::string& key, std::function<void()> cb);
 
     void shutdown(); // PLUGIN_EXIT: remove fd sources, unref buses, drop callbacks
 }

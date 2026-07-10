@@ -45,6 +45,12 @@ class IModule {
     // When true, the string returned by tooltip() is Pango markup (colored
     // spans, per-cell background) and is rendered via the markup path instead
     // of plain single-color text. Used by the clock's calendar.
+    //
+    // SECURITY: the markup renderer does NOT escape its input. Any module that
+    // returns true here and interpolates EXTERNAL/untrusted text (window titles,
+    // tray/notification content, exec output, ...) into that markup MUST pass it
+    // through Fmt::escapeMarkup() first, or it is a markup-injection sink. The
+    // clock is safe because its calendar is fully self-generated + escaped.
     virtual bool tooltipIsMarkup() const { return false; }
 
     // Whether hovering this segment should show a "clickable" (pointer) cursor.

@@ -26,6 +26,12 @@ namespace Fmt {
     // strip pango markup tags (<span ...>, <b>, ...) for plain-text rendering
     std::string stripPango(const std::string& s);
 
+    // Escape Pango/XML markup metacharacters so external text can be embedded in
+    // a markup string without injecting spans/entities: & < > and also " and '
+    // for attribute-value safety. Any module that emits PANGO MARKUP MUST route
+    // untrusted/external text (window titles, tags, filenames, ...) through this.
+    std::string escapeMarkup(const std::string& s);
+
     std::vector<std::string> split(const std::string& s, char sep);
 
     // Month calendar grid for the clock tooltip, emitted as PANGO MARKUP (the
