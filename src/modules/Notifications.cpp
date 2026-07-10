@@ -91,7 +91,7 @@ namespace {
         // re-add the matches on the fresh bus + refetch. Guarded by m_alive so a
         // reload-orphaned copy of this callback is a safe no-op.
         WP<bool> weak = m_alive;
-        DBus::onReconnect(false /*session*/, [this, weak] {
+        DBus::onReconnect(false /*session*/, "notifications", [this, weak] {
             if (!weak.lock())
                 return; // module was destroyed (e.g. config reload); do not touch it
             const auto BUS = DBus::session();

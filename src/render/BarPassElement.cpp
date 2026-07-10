@@ -27,11 +27,21 @@ std::optional<CBox> CBarPassElement::boundingBox() {
     if (!BAR)
         return std::nullopt;
 
-    return BAR->barBoxLocal(); // monitor-local LOGICAL; simplify() scales it
+    const auto BOX = BAR->barBoxLocal(); // monitor-local LOGICAL; simplify() scales it
+    // A degenerate (zero/negative width or height) box must never feed the live
+    // blur path: negative geometry into blur is UB and Hyprland RASSERTs on it.
+    // Reporting nullopt here makes needsLiveBlur() (which is gated on
+    // boundingBox().has_value()) return false, so the pair can't hit the
+    // "needsLiveBlur() && !boundingBox()" RASSERT either.
+    if (BOX.w <= 0 || BOX.h <= 0)
+        return std::nullopt;
+    return BOX;
 }
 
 bool CBarPassElement::needsLiveBlur() {
-    // RASSERT: live blur with a null bounding box crashes the compositor
+    // Gate on a valid, non-degenerate box: boundingBox() returns nullopt for a
+    // degenerate bar, and live blur with a null/negative bounding box RASSERTs
+    // (crashes the compositor).
     return g_cfg.blur && g_cfg.blur->value() && boundingBox().has_value();
 }
 

@@ -84,7 +84,14 @@ namespace {
 
             size_t          bestRank = PREFERRED.size();
             std::error_code ec;
-            for (const auto& ENTRY : std::filesystem::directory_iterator("/sys/class/hwmon", ec)) {
+            // Manual, non-throwing iteration: the ec-taking constructor only
+            // suppresses a throw at construction; a range-for's operator++ still
+            // THROWS on a mid-iteration error (entry vanishing, EACCES/EIO), which
+            // would propagate out of init() into the compositor = crash.
+            auto                                        it = std::filesystem::directory_iterator("/sys/class/hwmon", ec);
+            const std::filesystem::directory_iterator   end;
+            for (; !ec && it != end; it.increment(ec)) {
+                const auto&   ENTRY = *it;
                 std::ifstream nf(ENTRY.path() / "name");
                 std::string   name;
                 if (!nf.is_open() || !std::getline(nf, name))

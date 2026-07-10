@@ -12,10 +12,12 @@
 #include <cstring>
 #include <filesystem>
 #include <map>
+#include <set>
 #include <string>
 #include <vector>
 
 #define WLR_USE_UNSTABLE
+#include <hyprland/src/Compositor.hpp>
 #include <hyprland/src/config/shared/complex/ComplexDataTypes.hpp>
 #include <hyprland/src/helpers/Monitor.hpp>
 #include <hyprland/src/helpers/math/Math.hpp>
@@ -26,6 +28,7 @@
 #include "../globals.hpp"
 #include "../render/TextCache.hpp"
 #include "../services/DBus.hpp"
+#include "../services/MainThread.hpp"
 
 using namespace Render::GL;
 
@@ -91,6 +94,22 @@ namespace {
         if (POS == 0)
             return {"", s}; // bare path: cannot resolve a bus name from a registry string
         return {s.substr(0, POS), s.substr(POS)};
+    }
+
+    // A D-Bus bus name (unique ":1.23" or well-known "org.kde.Foo") is a restricted
+    // charset. We concatenate busName into an sd_bus_add_match rule string, so any
+    // char outside this set (notably a quote/comma) could break out of the
+    // arg0='...' clause and inject match conditions. Reject anything malformed
+    // before it ever reaches addItem / the match rule (fix 3).
+    bool isValidBusName(const std::string& n) {
+        if (n.empty())
+            return false;
+        for (const unsigned char C : n) {
+            const bool OK = (C >= 'A' && C <= 'Z') || (C >= 'a' && C <= 'z') || (C >= '0' && C <= '9') || C == '_' || C == '.' || C == ':' || C == '-';
+            if (!OK)
+                return false;
+        }
+        return true;
     }
 
     // ---- com.canonical.dbusmenu model ----
@@ -167,10 +186,15 @@ namespace {
             sd_bus_message_skip(m, "v");
     }
 
+    // Defense-in-depth cap on dbusmenu nesting: a malicious client could ship a
+    // pathologically deep layout to blow our stack. Beyond this we stop
+    // descending (still consuming the wire data) rather than recurse (fix 4).
+    constexpr int MAX_MENU_DEPTH = 16;
+
     // parse one (ia{sv}av) node; recursion covers the whole tree from GetLayout
     // with depth -1. Returns false only if the struct itself could not be read;
     // partial property/child failures degrade gracefully (never throw/crash).
-    bool parseMenuNode(sd_bus_message* m, SMenuEntry& out) {
+    bool parseMenuNode(sd_bus_message* m, SMenuEntry& out, int depth = 0) {
         if (sd_bus_message_enter_container(m, SD_BUS_TYPE_STRUCT, "ia{sv}av") <= 0)
             return false;
 
@@ -207,10 +231,13 @@ namespace {
             sd_bus_message_exit_container(m); // a{sv}
         }
 
-        if (sd_bus_message_enter_container(m, SD_BUS_TYPE_ARRAY, "v") > 0) {
+        if (depth >= MAX_MENU_DEPTH) {
+            // at the cap: consume the children array without descending
+            sd_bus_message_skip(m, "av");
+        } else if (sd_bus_message_enter_container(m, SD_BUS_TYPE_ARRAY, "v") > 0) {
             while (sd_bus_message_enter_container(m, SD_BUS_TYPE_VARIANT, "(ia{sv}av)") > 0) {
                 SMenuEntry child;
-                if (parseMenuNode(m, child))
+                if (parseMenuNode(m, child, depth + 1))
                     out.children.emplace_back(std::move(child));
                 sd_bus_message_exit_container(m); // variant
             }
@@ -378,6 +405,16 @@ namespace {
             m_bus = sd_bus_ref(bus); // owned ref, released last in the dtor
             if (!tryBecomeWatcher())
                 enterClientMode();
+
+            // Self-heal: when the session-bus connection drops and DBus reopens
+            // it, the old bus object + every slot we added on it are dead. Re-
+            // attach to the fresh connection. Guarded by m_alive so a reload-
+            // orphaned copy of this callback is a safe no-op (fix 6).
+            DBus::onReconnect(false /*session*/, "tray", [this, weak = WP<bool>(m_alive)] {
+                if (!weak.lock())
+                    return; // module was destroyed (e.g. config reload); do not touch it
+                reattach();
+            });
         }
 
         void update() override {
@@ -614,7 +651,24 @@ namespace {
             }
         }
 
+        // (re)install the per-item signal + NameOwnerChanged matches on m_bus.
+        // busName is validated (isValidBusName) before an item is ever created,
+        // so its use in the match-rule string here is injection-safe.
+        void armItemMatches(STrayItem* item) {
+            // member = nullptr -> all signals on the item iface (NewIcon, NewStatus, ...)
+            sd_bus_match_signal(m_bus, &item->slotSignals, item->busName.c_str(), item->objectPath.c_str(), ITEM_IFACE, nullptr, onItemSignal, item);
+            const std::string MATCH = "type='signal',sender='org.freedesktop.DBus',path='/org/freedesktop/DBus',"
+                                      "interface='org.freedesktop.DBus',member='NameOwnerChanged',arg0='" +
+                item->busName + "'";
+            sd_bus_add_match(m_bus, &item->slotOwnerChanged, MATCH.c_str(), onItemOwnerChanged, item);
+        }
+
         void addItem(const std::string& busName, const std::string& path) {
+            // fix 3: a malformed bus name could break out of the match-rule
+            // arg0='...' clause; drop it before it reaches any match string.
+            if (!isValidBusName(busName))
+                return;
+
             const std::string SERVICE = busName + path;
             for (auto& it : m_items) {
                 if (it->service == SERVICE) {
@@ -623,18 +677,19 @@ namespace {
                 }
             }
 
+            // fix 1: cap tracked items so a malicious client can't OOM us by
+            // spamming registrations. Existing items still refresh (loop above).
+            constexpr size_t MAX_ITEMS = 256;
+            if (m_items.size() >= MAX_ITEMS)
+                return;
+
             auto item        = makeUnique<STrayItem>();
             item->owner      = this;
             item->busName    = busName;
             item->objectPath = path;
             item->service    = SERVICE;
 
-            // member = nullptr -> all signals on the item iface (NewIcon, NewStatus, ...)
-            sd_bus_match_signal(m_bus, &item->slotSignals, busName.c_str(), path.c_str(), ITEM_IFACE, nullptr, onItemSignal, item.get());
-            const std::string MATCH = "type='signal',sender='org.freedesktop.DBus',path='/org/freedesktop/DBus',"
-                                      "interface='org.freedesktop.DBus',member='NameOwnerChanged',arg0='" +
-                busName + "'";
-            sd_bus_add_match(m_bus, &item->slotOwnerChanged, MATCH.c_str(), onItemOwnerChanged, item.get());
+            armItemMatches(item.get());
 
             auto* const RAW = item.get();
             m_items.emplace_back(std::move(item));
@@ -753,6 +808,12 @@ namespace {
                 } else if (KEY == "IconPixmap") {
                     if (sd_bus_message_enter_container(m, SD_BUS_TYPE_VARIANT, "a(iiay)") > 0) {
                         if (sd_bus_message_enter_container(m, SD_BUS_TYPE_ARRAY, "(iiay)") > 0) {
+                            // fix 1: reject absurd dimensions and cap total retained
+                            // pixmap bytes per item so a hostile client cannot pin
+                            // hundreds of MB via many/huge pixmaps.
+                            constexpr int32_t MAX_PIXMAP_DIM   = 512;
+                            constexpr size_t  MAX_PIXMAP_BYTES = 4u * 1024 * 1024;
+                            size_t            pixmapBytes      = 0;
                             while (sd_bus_message_enter_container(m, SD_BUS_TYPE_STRUCT, "iiay") > 0) {
                                 int32_t w = 0, h = 0;
                                 sd_bus_message_read(m, "ii", &w, &h);
@@ -760,13 +821,15 @@ namespace {
                                 size_t      sz  = 0;
                                 sd_bus_message_read_array(m, 'y', &ptr, &sz);
                                 sd_bus_message_exit_container(m);
-                                // NordVPN publishes a 0x0 dummy pixmap — skip degenerates
-                                if (w > 0 && h > 0 && ptr && sz == (size_t)w * h * 4) {
+                                // NordVPN publishes a 0x0 dummy pixmap — skip degenerates.
+                                // Keep the exact sz == w*h*4 check; add dim + byte caps.
+                                if (w > 0 && h > 0 && w <= MAX_PIXMAP_DIM && h <= MAX_PIXMAP_DIM && ptr && sz == (size_t)w * h * 4 && pixmapBytes + sz <= MAX_PIXMAP_BYTES) {
                                     STrayPixmap pm;
                                     pm.width  = w;
                                     pm.height = h;
                                     pm.data.assign((const uint8_t*)ptr, (const uint8_t*)ptr + sz);
                                     item->pixmaps.emplace_back(std::move(pm));
+                                    pixmapBytes += sz;
                                 }
                             }
                             sd_bus_message_exit_container(m);
@@ -781,7 +844,10 @@ namespace {
             }
             sd_bus_message_exit_container(m); // array
 
-            item->texByPx.clear(); // icon may have changed
+            // fix 2: build the icon texture(s) HERE (we are on a D-Bus reply, not
+            // in the render pass, so filesystem I/O + createTexture are safe).
+            // segments()/iconFor() then become a pure cached lookup.
+            rebuildTextures(item);
             requestRedraw();
         }
 
@@ -795,12 +861,65 @@ namespace {
         std::vector<UP<STrayItem>> m_items;
 
       private:
+        // fix 2: PURE cached lookup — MUST NOT touch the filesystem or build a
+        // texture (segments() calls this every frame). On a miss (a monitor
+        // scale that wasn't built in applyProps, e.g. hotplug/rescale) show no
+        // icon and schedule a deferred rebuild off the render path.
         SP<Render::ITexture> iconFor(STrayItem* item, int px) {
             if (const auto IT = item->texByPx.find(px); IT != item->texByPx.end())
                 return IT->second;
-            auto tex = buildIcon(item, px); // one-time I/O per (item, px); cached even on failure
-            item->texByPx[px] = tex;
-            return tex;
+            scheduleTextureRebuild();
+            return nullptr;
+        }
+
+        // the set of icon px sizes the live monitors actually need (trayIconSize
+        // times each monitor's scale). Falls back to the unscaled size if there
+        // are no monitors yet, so we never build an empty set.
+        std::set<int> neededPxSet() const {
+            std::set<int> pxs;
+            const double  SIZE = (double)g_cfg.trayIconSize->value();
+            for (const auto& MON : g_pCompositor->m_monitors) {
+                if (MON)
+                    pxs.insert(std::max(1, (int)std::lround(SIZE * MON->m_scale)));
+            }
+            if (pxs.empty())
+                pxs.insert(std::max(1, (int)std::lround(SIZE)));
+            return pxs;
+        }
+
+        // build+cache any missing px in `pxs` for one item (cached even on
+        // failure, so a bad icon is not retried every frame). Never called from
+        // the render pass.
+        void buildTexturesFor(STrayItem* item, const std::set<int>& pxs) {
+            for (const int PX : pxs) {
+                if (item->texByPx.find(PX) == item->texByPx.end())
+                    item->texByPx[PX] = buildIcon(item, PX);
+            }
+        }
+
+        // icon changed (applyProps): drop stale textures and rebuild for the
+        // sizes currently on screen.
+        void rebuildTextures(STrayItem* item) {
+            item->texByPx.clear();
+            buildTexturesFor(item, neededPxSet());
+        }
+
+        // deferred, coalesced rebuild for a render-time cache miss. Runs on the
+        // main thread OUTSIDE the render pass (via MainThread::post), guarded by
+        // m_alive so a destroyed module is a safe no-op.
+        void scheduleTextureRebuild() {
+            if (m_rebuildPosted)
+                return;
+            m_rebuildPosted = true;
+            MainThread::post([this, weak = WP<bool>(m_alive)] {
+                if (!weak.lock())
+                    return;
+                m_rebuildPosted = false;
+                const auto PXS  = neededPxSet();
+                for (auto& item : m_items)
+                    buildTexturesFor(item.get(), PXS);
+                requestRedraw();
+            });
         }
 
         SP<Render::ITexture> buildIcon(STrayItem* item, int px) {
@@ -848,6 +967,14 @@ namespace {
                     return name;
                 return "";
             }
+
+            // fix 5: a RELATIVE icon name must be a bare basename. It is
+            // wire-supplied (IconName) and gets concatenated onto trusted icon
+            // directory prefixes below; a name like "../../etc/shadow" or one
+            // containing '/' could otherwise steer us to open files outside the
+            // icon dirs. Constrain it to a plain filename.
+            if (name.find('/') != std::string::npos || name.find("..") != std::string::npos)
+                return "";
 
             static const char* EXTS[] = {".png", ".svg"};
             static const char* CATS[] = {"apps", "status", "devices", "panel", "actions"};
@@ -986,6 +1113,46 @@ namespace {
             }
         }
 
+        // fix 6: the session bus reconnected. The old bus object and EVERY slot
+        // we added on it are dead; rebuild all of them on the fresh connection.
+        // We keep the item list (state we still want) and re-arm its matches.
+        void reattach() {
+            sd_bus* bus = DBus::session();
+            if (!bus)
+                return; // bus still down; the next reconnect notify will retry
+
+            // Drop every slot bound to the old connection. Our owned m_bus ref
+            // still keeps the old bus object alive, so these unrefs are safe.
+            closePopup(); // also unrefs any in-flight GetLayout slot
+            dropClientSlots();
+            if (m_slotVtable)
+                m_slotVtable = sd_bus_slot_unref(m_slotVtable);
+            for (auto& item : m_items) {
+                item->slotSignals      = sd_bus_slot_unref(item->slotSignals);
+                item->slotOwnerChanged = sd_bus_slot_unref(item->slotOwnerChanged);
+                item->slotGetAll       = sd_bus_slot_unref(item->slotGetAll);
+                item->pendingGetAll    = false;
+            }
+
+            // Swap our owned ref to the fresh connection (release the old one).
+            sd_bus_unref(m_bus);
+            m_bus = sd_bus_ref(bus);
+
+            // Re-establish our role on the new bus. The old name grants died with
+            // the old connection; reset the flags and re-request from scratch.
+            m_isWatcher    = false;
+            m_ownsHostName = false;
+            if (!tryBecomeWatcher())
+                enterClientMode();
+
+            // Re-arm each known item's matches + refetch its props on the new bus.
+            for (auto& item : m_items) {
+                armItemMatches(item.get());
+                requestGetAll(item.get());
+            }
+            DBus::flush(m_bus);
+        }
+
         sd_bus* m_bus          = nullptr;
         bool    m_isWatcher    = false;
         bool    m_ownsHostName = false;
@@ -1009,6 +1176,15 @@ namespace {
         int                     m_popupExpandedTop = -1; // index of the expanded top entry
         int                     m_popupHoveredSub  = -1;
         sd_bus_slot*            m_slotMenuLayout   = nullptr; // in-flight GetLayout
+
+        // fix 2: coalesces render-miss texture rebuilds posted to the main thread.
+        bool     m_rebuildPosted = false;
+
+        // fix 6: liveness guard for the DBus reconnect callback + any posted
+        // texture rebuild. Both live beyond a single call; this module is
+        // destroyed+rebuilt on config reload, so they weak-capture this guard and
+        // no-op once the module (and this SP) are gone.
+        SP<bool> m_alive = makeShared<bool>(true);
     };
 
     // ---- callback bodies ----
@@ -1029,7 +1205,9 @@ namespace {
             busName = arg;
             path    = "/StatusNotifierItem";
         }
-        if (!busName.empty())
+        // fix 3: validate here too so a bad name never reaches addItem / a match
+        // rule (addItem re-checks; this keeps the entry point honest).
+        if (isValidBusName(busName))
             self->addItem(busName, path);
         return sd_bus_reply_method_return(m, NULL);
     }

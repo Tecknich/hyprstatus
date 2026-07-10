@@ -19,15 +19,25 @@ namespace {
     int              g_pipe[2] = {-1, -1};
     wl_event_source* g_source  = nullptr;
 
+    // The write-end fd the async signal handler uses. It is the ONLY shared state
+    // the handler touches, and a volatile sig_atomic_t is the only type it may
+    // race-read against a main-thread writer without a data race / strict-
+    // conformance UB. g_pipe[1] (a plain int) is main-thread-only; the handler
+    // must never read it.
+    volatile sig_atomic_t g_writeFd = -1;
+
     std::map<int, std::vector<std::function<void()>>> g_subs;   // n -> callbacks
     std::map<int, struct sigaction>                   g_savedActions;
 
     void handler(int signo) {
-        // async-signal-safe only: one write, errno preserved
-        const int SAVED = errno;
-        const unsigned char B = static_cast<unsigned char>(signo - SIGRTMIN);
-        if (g_pipe[1] >= 0) {
-            ssize_t ret = write(g_pipe[1], &B, 1);
+        // async-signal-safe only: one write, errno preserved. Reads ONLY
+        // g_writeFd (volatile sig_atomic_t) into a local so the >= 0 check and the
+        // write() see the same value; g_pipe[1] is never touched here.
+        const int           SAVED = errno;
+        const unsigned char B     = static_cast<unsigned char>(signo - SIGRTMIN);
+        const int           FD    = g_writeFd;
+        if (FD >= 0) {
+            ssize_t ret = write(FD, &B, 1);
             (void)ret; // pipe full = wakeup already pending; drop is fine
         }
         errno = SAVED;
@@ -65,6 +75,8 @@ namespace {
             g_pipe[0] = g_pipe[1] = -1;
             return false;
         }
+        // Publish the write end to the handler ONLY once the pipe is fully live.
+        g_writeFd = g_pipe[1];
         return true;
     }
 }
@@ -129,16 +141,17 @@ void RtSignals::shutdown() {
 
     // Write end teardown, TOCTOU-hardened. An RT signal is process-directed and may
     // already be executing handler() on another compositor thread, having passed
-    // its `g_pipe[1] >= 0` check. First publish -1 so any not-yet-started handler
-    // skips the write; then dup2() /dev/null over the real fd so an in-flight write
-    // lands harmlessly instead of into a fd that a plain close() could let get
-    // recycled (client socket / dmabuf / log) and silently corrupted. Residual
-    // risk: a handler preempted between check and write, resumed only after the
-    // final close() below, could still hit a recycled fd -- a nanosecond-wide
+    // its `g_writeFd >= 0` check. First publish -1 to g_writeFd so any not-yet-
+    // started handler skips the write; then dup2() /dev/null over the real fd so an
+    // in-flight write lands harmlessly instead of into a fd that a plain close()
+    // could let get recycled (client socket / dmabuf / log) and silently corrupted.
+    // Residual risk: a handler preempted between check and write, resumed only after
+    // the final close() below, could still hit a recycled fd -- a nanosecond-wide
     // window per plugin unload, accepted (handler stays write()-only, i.e.
     // async-signal-safe).
     if (g_pipe[1] >= 0) {
         const int WFD = g_pipe[1];
+        g_writeFd     = -1; // stop the handler BEFORE any fd teardown
         g_pipe[1]     = -1;
         const int NUL = open("/dev/null", O_WRONLY | O_CLOEXEC);
         if (NUL >= 0) {

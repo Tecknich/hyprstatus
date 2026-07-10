@@ -47,7 +47,14 @@ namespace {
 
     std::string findSupplyByType(const std::string& type) {
         std::error_code ec;
-        for (const auto& ENTRY : std::filesystem::directory_iterator(POWER_SUPPLY_DIR, ec)) {
+        // Manual, non-throwing iteration: the ec constructor suppresses only a
+        // throw at construction; a range-for's operator++ still THROWS on a
+        // mid-iteration error (entry vanishing, EACCES/EIO), which would
+        // propagate out of a timer callback into the compositor = crash.
+        auto                                      it = std::filesystem::directory_iterator(POWER_SUPPLY_DIR, ec);
+        const std::filesystem::directory_iterator end;
+        for (; !ec && it != end; it.increment(ec)) {
+            const auto& ENTRY = *it;
             if (readTrimmed(ENTRY.path() / "type").value_or("") == type)
                 return ENTRY.path().string();
         }
@@ -237,10 +244,17 @@ namespace {
             bool  relevant = false;
             char  buf[8192];
             for (;;) {
-                const ssize_t N = recv(fd, buf, sizeof(buf), 0);
+                struct sockaddr_nl src{};
+                socklen_t          srclen = sizeof(src);
+                const ssize_t      N      = recvfrom(fd, buf, sizeof(buf), 0, reinterpret_cast<struct sockaddr*>(&src), &srclen);
                 if (N > 0) {
-                    // scan raw bytes: uevent payloads are NUL-separated k=v lines
-                    if (std::string_view(buf, (size_t)N).find("power_supply") != std::string_view::npos)
+                    // Authenticate the sender: only the kernel (nl_pid == 0) may
+                    // trigger a refresh. A local process can unicast a spoofed
+                    // "power_supply" datagram to this socket; ignore anything not
+                    // kernel-originated. scan raw bytes: uevent payloads are
+                    // NUL-separated k=v lines.
+                    if (srclen == sizeof(src) && src.nl_pid == 0 &&
+                        std::string_view(buf, (size_t)N).find("power_supply") != std::string_view::npos)
                         relevant = true;
                     continue;
                 }

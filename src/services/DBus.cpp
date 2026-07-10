@@ -10,7 +10,8 @@
 #include <cerrno>
 #include <chrono>
 #include <functional>
-#include <vector>
+#include <map>
+#include <string>
 
 namespace {
     struct SBusConn {
@@ -18,7 +19,9 @@ namespace {
         wl_event_source* source  = nullptr;
         bool             pumping = false; // reentrancy guard: sd_bus forbids recursive processing
         bool             wanted  = false; // a consumer connected this bus at least once: keep reconnecting it
-        std::vector<std::function<void()>> reconnectCbs; // fired after a successful RECONNECT (not first connect)
+        // fired after a successful RECONNECT (not first connect); keyed by consumer
+        // so a module rebuilt on reload replaces its entry instead of leaking one.
+        std::map<std::string, std::function<void()>> reconnectCbs;
     };
 
     SBusConn            g_session;
@@ -130,7 +133,7 @@ namespace {
 
         // Copy before firing: a callback may re-enter DBus (e.g. refetch -> system()).
         const auto CBS = conn.reconnectCbs;
-        for (const auto& CB : CBS) {
+        for (const auto& [KEY, CB] : CBS) {
             if (CB)
                 CB();
         }
@@ -154,10 +157,12 @@ void DBus::flush(sd_bus* bus) {
     sd_bus_flush(bus);
 }
 
-void DBus::onReconnect(bool systemBus, std::function<void()> cb) {
+void DBus::onReconnect(bool systemBus, const std::string& key, std::function<void()> cb) {
     if (g_dead || !cb)
         return;
-    (systemBus ? g_system : g_session).reconnectCbs.emplace_back(std::move(cb));
+    // keyed insert/replace: a module re-registering on reload overwrites its own
+    // stale entry, so the map is bounded by the number of distinct consumers.
+    (systemBus ? g_system : g_session).reconnectCbs[key] = std::move(cb);
 }
 
 void DBus::shutdown() {

@@ -90,9 +90,11 @@ CBox CBar::barBoxLocal() const {
         return {};
 
     const double MARGIN = g_cfg.margin->value();
-    const double HEIGHT = g_cfg.height->value();
-    const double W      = MON->m_size.x - 2 * MARGIN;
-    const double Y      = g_cfg.position->value() == "bottom" ? MON->m_size.y - MARGIN - HEIGHT : MARGIN;
+    const double HEIGHT = std::max<double>(0.0, g_cfg.height->value());
+    // A large margin on a narrow output can drive width negative; a degenerate
+    // (negative) box must never reach the live-blur path (RASSERT). Clamp to 0.
+    const double W = std::max<double>(0.0, MON->m_size.x - 2 * MARGIN);
+    const double Y = g_cfg.position->value() == "bottom" ? MON->m_size.y - MARGIN - HEIGHT : MARGIN;
 
     return {MARGIN, Y, W, HEIGHT};
 }
