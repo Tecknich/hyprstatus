@@ -36,6 +36,15 @@ jobs:
       - name: Configure
         run: cmake --no-warn-unused-cli -DCMAKE_BUILD_TYPE=Release -B build -S .
 
+      - name: Debug compiler + flags
+        run: |
+          echo "CMAKE_CXX_COMPILER_ID = $(cmake -LA -N build 2>/dev/null | grep -i COMPILER_ID || echo '(not cached)')"
+          echo "--- flags.make (CXX_FLAGS) ---"
+          grep -H 'CXX_FLAGS' build/CMakeFiles/hyprstatus.dir/flags.make || true
+          grep -q 'gnu-unique' build/CMakeFiles/hyprstatus.dir/flags.make \
+            && echo ">>> -fno-gnu-unique IS present" \
+            || echo ">>> -fno-gnu-unique is MISSING"
+
       - name: Build
         run: cmake --build build --parallel
 
