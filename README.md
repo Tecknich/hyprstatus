@@ -97,6 +97,12 @@ full-year view) · `cpu` (per-core tooltip) · `memory` · `temperature` ·
 Waybar option names (`format`, `format-icons.<key>`, `states.*`, `interval`,
 `on-click*`, `tooltip-format*`, `max-length`, ...) work as you expect.
 
+The `tray` module can filter items: `hide`/`hide-passive` drop items by
+Id/Title or Passive status, and `hide-if-bt-disconnected = <item>=<device>`
+hides an item unless a BlueZ device matching `<device>` is connected right now
+(watched live over the system bus) — handy for apps like librepods that leave a
+tray item behind, with stale battery, after the bluetooth device disconnects.
+
 ## Known limitations
 
 - **Tray menus** render natively (DBusMenu popups) with per-item icons,
