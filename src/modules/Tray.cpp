@@ -52,6 +52,12 @@ namespace {
     constexpr const char* PROPS_IFACE   = "org.freedesktop.DBus.Properties";
     constexpr const char* MENU_IFACE    = "com.canonical.dbusmenu";
 
+    // BlueZ (system bus) — used by the `hide-if-bt-disconnected` option to gate a
+    // tray item on a bluetooth device's live connection state.
+    constexpr const char* BLUEZ_NAME    = "org.bluez";
+    constexpr const char* OBJMGR_IFACE  = "org.freedesktop.DBus.ObjectManager";
+    constexpr const char* DEVICE_IFACE  = "org.bluez.Device1";
+
     class CTrayModule;
 
     struct STrayPixmap {
@@ -440,7 +446,12 @@ namespace {
                 sd_bus_slot_unref(m_slotMenuLayout);
                 m_slotMenuLayout = nullptr;
             }
-            m_popupOpen = false;
+            // BlueZ watch slots (system bus) — userdata is this; drop before we die.
+            m_slotBtProps   = sd_bus_slot_unref(m_slotBtProps);
+            m_slotBtAdded   = sd_bus_slot_unref(m_slotBtAdded);
+            m_slotBtRemoved = sd_bus_slot_unref(m_slotBtRemoved);
+            m_slotBtObjects = sd_bus_slot_unref(m_slotBtObjects);
+            m_popupOpen     = false;
             m_items.clear();
             dropClientSlots();
             if (m_slotVtable) {
@@ -480,6 +491,11 @@ namespace {
                     return; // module was destroyed (e.g. config reload); do not touch it
                 reattach();
             });
+
+            // hide-if-bt-disconnected: arm a live BlueZ watch on the system bus so
+            // items gated on a bluetooth device re-evaluate the frame it (dis)connects.
+            parseBtRules();
+            setupBtWatch();
         }
 
         void update() override {
@@ -946,13 +962,44 @@ namespace {
 
       private:
         // config-driven per-item visibility (applied in segments() + hidden()).
-        //   hide          : space/comma-separated tokens; hide the item if its Id
-        //                   OR Title contains (case-insensitive) any token.
-        //   hide-passive  : bool (default false); hide Passive items entirely
-        //                   instead of the default 50%-alpha dim.
+        //   hide                   : space/comma-separated tokens; hide the item if
+        //                            its Id OR Title contains (case-insensitive) any
+        //                            token.
+        //   hide-passive           : bool (default false); hide Passive items
+        //                            entirely instead of the default 50%-alpha dim.
+        //   hide-if-bt-disconnected : ";"-separated "<idOrTitleToken>=<deviceMatch>"
+        //                            rules; hide the matched item unless a BlueZ
+        //                            device whose Alias/Name/Address contains
+        //                            <deviceMatch> is currently Connected. Lets you
+        //                            gate a tray item that stays registered while its
+        //                            bluetooth device is gone (e.g. librepods keeps
+        //                            its AirPods item — with stale battery — after the
+        //                            pods disconnect). BlueZ is the source of truth,
+        //                            watched live over the system bus (see m_btDevices).
         bool itemHidden(const STrayItem* item) const {
             if (item->status == "Passive" && optBool("hide-passive", false))
                 return true;
+
+            const std::string ID = toLower(item->id), TITLE = toLower(item->title);
+            const auto        MATCHES_ITEM = [&](const std::string& tok) {
+                return ID.find(tok) != std::string::npos || TITLE.find(tok) != std::string::npos;
+            };
+
+            // hide-if-bt-disconnected: gate the item on a live bluetooth connection.
+            for (const auto& RULE : m_btRules) {
+                if (!MATCHES_ITEM(RULE.itemTok))
+                    continue;
+                bool connected = false;
+                for (const auto& DEV : m_btDevices) {
+                    if (DEV.connected && DEV.match.find(RULE.devMatch) != std::string::npos) {
+                        connected = true;
+                        break;
+                    }
+                }
+                if (!connected)
+                    return true;
+            }
+
             const auto HIDE = opt("hide");
             if (HIDE.empty())
                 return false;
@@ -960,15 +1007,181 @@ namespace {
             for (char& c : list) // accept both space- and comma-separated lists
                 if (c == ',')
                     c = ' ';
-            const std::string ID = toLower(item->id), TITLE = toLower(item->title);
             for (const auto& TOK : Fmt::split(list, ' ')) {
                 const std::string T = toLower(TOK);
                 if (T.empty())
                     continue;
-                if (ID.find(T) != std::string::npos || TITLE.find(T) != std::string::npos)
+                if (MATCHES_ITEM(T))
                     return true;
             }
             return false;
+        }
+
+        // ---- hide-if-bt-disconnected: live BlueZ connection tracking ----
+        // System bus, event-driven; only armed when a rule is configured. The tray
+        // item stays registered by its app (librepods) even after the bluetooth
+        // device drops, so BlueZ Device1.Connected is the only reliable signal.
+
+        struct SBtRule {
+            std::string itemTok;  // matches a tray item Id/Title (lowercased)
+            std::string devMatch; // matches a BlueZ device Alias/Name/Address (lowercased)
+        };
+        struct SBtDev {
+            std::string match;             // lowercased Alias + Name + Address, joined
+            bool        connected = false;
+        };
+
+        // Parse opt("hide-if-bt-disconnected") into rules. Called from init().
+        void parseBtRules() {
+            m_btRules.clear();
+            const auto SPEC = opt("hide-if-bt-disconnected");
+            if (SPEC.empty())
+                return;
+            for (const auto& RULE : Fmt::split(SPEC, ';')) {
+                const auto EQ = RULE.find('=');
+                if (EQ == std::string::npos)
+                    continue;
+                const std::string TOK = toLower(Fmt::trim(RULE.substr(0, EQ)));
+                const std::string DEV = toLower(Fmt::trim(RULE.substr(EQ + 1)));
+                if (!TOK.empty() && !DEV.empty())
+                    m_btRules.push_back({TOK, DEV});
+            }
+        }
+
+        // Arm the system-bus watch (matches + initial GetManagedObjects). No-op if
+        // no rule is configured or the system bus is unavailable.
+        void setupBtWatch() {
+            if (m_btRules.empty())
+                return;
+            sd_bus* bus = DBus::system();
+            if (!bus)
+                return; // no system bus: matched items stay hidden until it appears
+            addBtMatches(bus);
+            fetchBtObjects();
+
+            // Self-heal on system-bus reconnect: the old bus + every slot we added
+            // on it are dead. Re-attach on the fresh connection. Guarded by m_alive
+            // so a reload-orphaned copy of this callback is a safe no-op.
+            DBus::onReconnect(true /*system*/, "tray-bt", [this, weak = WP<bool>(m_alive)] {
+                if (!weak.lock())
+                    return;
+                sd_bus* b = DBus::system();
+                if (!b)
+                    return;
+                m_slotBtProps   = sd_bus_slot_unref(m_slotBtProps);
+                m_slotBtAdded   = sd_bus_slot_unref(m_slotBtAdded);
+                m_slotBtRemoved = sd_bus_slot_unref(m_slotBtRemoved);
+                m_slotBtObjects = sd_bus_slot_unref(m_slotBtObjects);
+                m_btRefetch     = false;
+                addBtMatches(b);
+                fetchBtObjects();
+            });
+        }
+
+        void addBtMatches(sd_bus* bus) {
+            m_slotBtProps   = sd_bus_slot_unref(m_slotBtProps);
+            m_slotBtAdded   = sd_bus_slot_unref(m_slotBtAdded);
+            m_slotBtRemoved = sd_bus_slot_unref(m_slotBtRemoved);
+            // Any device property change / add / remove -> re-read the object tree.
+            sd_bus_match_signal(bus, &m_slotBtProps, BLUEZ_NAME, nullptr, PROPS_IFACE, "PropertiesChanged", sOnBtChanged, this);
+            sd_bus_match_signal(bus, &m_slotBtAdded, BLUEZ_NAME, "/", OBJMGR_IFACE, "InterfacesAdded", sOnBtChanged, this);
+            sd_bus_match_signal(bus, &m_slotBtRemoved, BLUEZ_NAME, "/", OBJMGR_IFACE, "InterfacesRemoved", sOnBtChanged, this);
+        }
+
+        // Coalesced GetManagedObjects: at most one in flight; a signal that lands
+        // while one is pending sets m_btRefetch so we re-read once it returns.
+        void fetchBtObjects() {
+            sd_bus* bus = DBus::system();
+            if (!bus)
+                return;
+            if (m_slotBtObjects) {
+                m_btRefetch = true;
+                return;
+            }
+            if (sd_bus_call_method_async(bus, &m_slotBtObjects, BLUEZ_NAME, "/", OBJMGR_IFACE, "GetManagedObjects", sOnBtObjects, this, "") < 0)
+                m_slotBtObjects = nullptr;
+            DBus::flush(bus);
+        }
+
+        // Parse a{oa{sa{sv}}} into m_btDevices (org.bluez.Device1 objects only).
+        void parseBtObjects(sd_bus_message* m) {
+            std::vector<SBtDev> devs;
+            if (sd_bus_message_enter_container(m, SD_BUS_TYPE_ARRAY, "{oa{sa{sv}}}") <= 0)
+                return;
+            while (sd_bus_message_enter_container(m, SD_BUS_TYPE_DICT_ENTRY, "oa{sa{sv}}") > 0) {
+                const char* objPath = nullptr;
+                sd_bus_message_read(m, "o", &objPath);
+                (void)objPath;
+                std::string alias, name, address;
+                bool        isDevice = false, connected = false;
+                if (sd_bus_message_enter_container(m, SD_BUS_TYPE_ARRAY, "{sa{sv}}") > 0) {
+                    while (sd_bus_message_enter_container(m, SD_BUS_TYPE_DICT_ENTRY, "sa{sv}") > 0) {
+                        const char* iface = nullptr;
+                        sd_bus_message_read(m, "s", &iface);
+                        if (iface && std::strcmp(iface, DEVICE_IFACE) == 0) {
+                            isDevice = true;
+                            if (sd_bus_message_enter_container(m, SD_BUS_TYPE_ARRAY, "{sv}") > 0) {
+                                while (sd_bus_message_enter_container(m, SD_BUS_TYPE_DICT_ENTRY, "sv") > 0) {
+                                    const char* pk = nullptr;
+                                    sd_bus_message_read(m, "s", &pk);
+                                    const std::string PK = pk ? pk : "";
+                                    if (PK == "Connected") {
+                                        if (sd_bus_message_enter_container(m, SD_BUS_TYPE_VARIANT, "b") > 0) {
+                                            int b = 0;
+                                            sd_bus_message_read(m, "b", &b);
+                                            sd_bus_message_exit_container(m);
+                                            connected = b != 0;
+                                        } else
+                                            sd_bus_message_skip(m, "v");
+                                    } else if (PK == "Alias" || PK == "Name" || PK == "Address") {
+                                        if (sd_bus_message_enter_container(m, SD_BUS_TYPE_VARIANT, "s") > 0) {
+                                            const char* sv = nullptr;
+                                            sd_bus_message_read(m, "s", &sv);
+                                            sd_bus_message_exit_container(m);
+                                            const std::string V = sv ? sv : "";
+                                            if (PK == "Alias")
+                                                alias = V;
+                                            else if (PK == "Name")
+                                                name = V;
+                                            else
+                                                address = V;
+                                        } else
+                                            sd_bus_message_skip(m, "v");
+                                    } else
+                                        sd_bus_message_skip(m, "v");
+                                    sd_bus_message_exit_container(m); // dict entry {sv}
+                                }
+                                sd_bus_message_exit_container(m); // array a{sv}
+                            }
+                        } else
+                            sd_bus_message_skip(m, "a{sv}"); // non-device interface props
+                        sd_bus_message_exit_container(m); // dict entry {sa{sv}}
+                    }
+                    sd_bus_message_exit_container(m); // array a{sa{sv}}
+                }
+                sd_bus_message_exit_container(m); // dict entry {oa{sa{sv}}}
+                if (isDevice)
+                    devs.push_back({toLower(alias + "\x1f" + name + "\x1f" + address), connected});
+            }
+            sd_bus_message_exit_container(m); // array
+            m_btDevices = std::move(devs);
+            requestRedraw();
+        }
+
+        static int sOnBtChanged(sd_bus_message*, void* userdata, sd_bus_error*) {
+            static_cast<CTrayModule*>(userdata)->fetchBtObjects();
+            return 0;
+        }
+        static int sOnBtObjects(sd_bus_message* m, void* userdata, sd_bus_error*) {
+            auto* const self      = static_cast<CTrayModule*>(userdata);
+            self->m_slotBtObjects = sd_bus_slot_unref(self->m_slotBtObjects);
+            if (!sd_bus_message_is_method_error(m, nullptr))
+                self->parseBtObjects(m);
+            if (self->m_btRefetch) {
+                self->m_btRefetch = false;
+                self->fetchBtObjects();
+            }
+            return 0;
         }
 
         // fix 2: PURE cached lookup — MUST NOT touch the filesystem or build a
@@ -1312,6 +1525,15 @@ namespace {
         sd_bus_slot* m_slotClientItemUnreg   = nullptr;
         sd_bus_slot* m_slotClientWatcherOwner = nullptr;
         sd_bus_slot* m_slotClientGetItems    = nullptr;
+
+        // hide-if-bt-disconnected watcher (system bus; armed only when configured)
+        std::vector<SBtRule> m_btRules;
+        std::vector<SBtDev>  m_btDevices;
+        sd_bus_slot*         m_slotBtProps   = nullptr;
+        sd_bus_slot*         m_slotBtAdded   = nullptr;
+        sd_bus_slot*         m_slotBtRemoved = nullptr;
+        sd_bus_slot*         m_slotBtObjects = nullptr;
+        bool                 m_btRefetch     = false;
 
         // ---- popup state ----
         bool                    m_popupOpen = false;
