@@ -41,11 +41,24 @@ jobs:
 
       - name: Verify plugin artifact + ABI hygiene
         run: |
-          test -f build/hyprstatus.so
+          so=build/hyprstatus.so
+          test -f "$so" || { echo "FAIL: $so not built"; exit 1; }
+          fail=0
           # required exported plugin entry points
-          nm -D build/hyprstatus.so | grep -q ' T pluginInit'
-          nm -D build/hyprstatus.so | grep -q ' T pluginAPIVersion'
-          nm -D build/hyprstatus.so | grep -q ' T pluginExit'
+          for sym in pluginInit pluginAPIVersion pluginExit; do
+            if nm -D "$so" | grep -q " T $sym"; then
+              echo "OK:   export $sym"
+            else
+              echo "FAIL: missing export $sym"; fail=1
+            fi
+          done
           # STB_GNU_UNIQUE symbols break dlclose/plugin unload — there must be none
-          test "$(nm build/hyprstatus.so | grep -c ' u ')" = "0"
-          echo "hyprstatus.so OK"
+          uc=$(nm "$so" | grep -c ' u ' || true)
+          if [ "$uc" = "0" ]; then
+            echo "OK:   0 STB_GNU_UNIQUE symbols"
+          else
+            echo "FAIL: $uc STB_GNU_UNIQUE symbol(s):"
+            nm "$so" | grep ' u ' | c++filt
+            fail=1
+          fi
+          [ "$fail" = "0" ] && echo "hyprstatus.so OK" || exit 1
