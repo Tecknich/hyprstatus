@@ -1,6 +1,5 @@
-<h1 align="left">
-  <img src="assets/hyprstatus-logo.svg" width="112" alt="hyprstatus">
-  <h1 align="center"> hyprstatus</h1>
+<h1 align="center">
+  <img src="assets/hyprstatus-logo.svg" width="56" align="middle" alt=""> hyprstatus
 </h1>
 
 <p align="center">
@@ -14,9 +13,9 @@
 
 ## Demo
 
-<video src="https://github.com/Tecknich/hyprstatus/raw/main/assets/hyprstatus-demo.mp4" controls muted width="760"></video>
+![hyprstatus demo](assets/hyprstatus-demo.gif)
 
-> If the video doesn't play inline, [watch the demo here](assets/hyprstatus-demo.mp4).
+> Animated preview — [full-quality video](assets/hyprstatus-demo.mp4).
 
 ## Why not just Waybar?
 
