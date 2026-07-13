@@ -1,8 +1,7 @@
-<p align="center">
+<h1 align="left">
   <img src="assets/hyprstatus-logo.svg" width="112" alt="hyprstatus">
-</p>
-
-<h1 align="center">hyprstatus</h1>
+  <p align="center"> hyprstatus</p>
+</h1>
 
 <p align="center">
   A status bar that lives <em>inside</em> the compositor — a Hyprland plugin that
