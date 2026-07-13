@@ -7,7 +7,7 @@
 <br clear="all">
 
 <p align="center">
-  A status bar that lives <em>inside</em> the compositor — a Hyprland plugin that
+  A status bar that lives inside the compositor — a Hyprland plugin that
   replaces Waybar with a bar rendered by Hyprland itself.
 </p>
 
