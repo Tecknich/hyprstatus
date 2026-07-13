@@ -1,6 +1,6 @@
 <h1 align="left">
   <img src="assets/hyprstatus-logo.svg" width="112" alt="hyprstatus">
-  <p align="center"> hyprstatus</p>
+  <h1 align="center"> hyprstatus</h1>
 </h1>
 
 <p align="center">
