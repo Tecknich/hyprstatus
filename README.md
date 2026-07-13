@@ -1,5 +1,6 @@
 <h1 align="center">
-  <img src="assets/hyprstatus-logo.svg" width="56" align="left" alt="">
+  <img src="assets/hyprstatus-logo.svg" width="96" align="left" alt="">
+  <img src="assets/spacer.svg" align="middle" alt="">
   hyprstatus
 </h1>
 <br clear="left">
