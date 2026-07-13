@@ -102,7 +102,8 @@ either `pkill -RTMIN+9 Hyprland` with `hyprstatus-set = mymod, signal, 9`, or
 full-year view) · `cpu` (per-core tooltip) · `memory` · `temperature` ·
 `battery` (instant AC plug/unplug via udev) · `network` ·
 `pulseaudio` (PipeWire via pipewire-pulse) · `power-profiles` · `language` ·
-`submap` · `tray` (StatusNotifierItem host + native DBusMenu popups) ·
+`submap` · `tray` (StatusNotifierItem host; native DBusMenu popups with
+per-item icons, submenus, separators, and checkboxes) ·
 `notifications` (SwayNotificationCenter) · custom exec modules.
 
 Waybar option names (`format`, `format-icons.<key>`, `states.*`, `interval`,
@@ -116,8 +117,8 @@ tray item behind, with stale battery, after the bluetooth device disconnects.
 
 ## Known limitations
 
-- **Tray menus** render natively (DBusMenu popups) with per-item icons,
-  submenus, separators, and checkboxes; nesting is limited to two levels.
+- **Tray menu nesting** is capped at two levels (menu + one submenu column);
+  entries nested any deeper are not shown.
 - The bar auto-hides over fullscreen windows by default (`hide_on_fullscreen`).
 - While a Hyprland config-error banner is visible it shares the reserved-area
   slot with the bar; layout normalizes as soon as the error is fixed.
