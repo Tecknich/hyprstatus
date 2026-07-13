@@ -1,13 +1,23 @@
-# hyprstatus
+<p align="center">
+  <img src="assets/hyprstatus-logo.svg" width="112" alt="hyprstatus">
+</p>
 
-A status bar that lives inside the compositor. hyprstatus is a Hyprland
-plugin that replaces Waybar with a bar rendered by
-Hyprland itself.
+<h1 align="center">hyprstatus</h1>
+
+<p align="center">
+  A status bar that lives <em>inside</em> the compositor — a Hyprland plugin that
+  replaces Waybar with a bar rendered by Hyprland itself.
+</p>
 
 > [!WARNING]
 > This software is 99% vibe coded with Claude Fable 5, however it has been externally reviewed.
-> Use at your own discretion
+> Use at your own discretion.
 
+## Demo
+
+<video src="https://github.com/Tecknich/hyprstatus/raw/main/assets/hyprstatus-demo.mp4" controls muted width="760"></video>
+
+> If the video doesn't play inline, [watch the demo here](assets/hyprstatus-demo.mp4).
 
 ## Why not just Waybar?
 
@@ -117,14 +127,18 @@ tray item behind, with stale battery, after the bluetooth device disconnects.
 
 Hyprland plugins are ABI-locked to the exact running compositor build and this
 one leans heavily on Hyprland's internal API, so it must be built against the
-version you run — always install via `hyprpm`, which does that for you. The
-`hyprpm.toml` `commit_pins` map each supported Hyprland release to a known-good
-`hyprstatus` commit; a Hyprland version without a pin builds against repo HEAD
-and may fail on API drift (open an issue with your `hyprctl version`).
+version you run — always install via `hyprpm`, which does that for you.
+
+hyprstatus currently tracks repo **HEAD**: `hyprpm add` / `hyprpm update` builds
+the latest `main`, which targets the current Hyprland release. There are no
+`commit_pins` yet — once Hyprland moves past the tested version below, a
+`commit_pins` entry will pin that release to a known-good commit so existing
+users keep working code while `main` moves on to the next API (open an issue with
+your `hyprctl version` if a build breaks).
 
 | Hyprland | hyprstatus | status |
 |---|---|---|
-| 0.55.4 | pinned (`commit_pins`) | developed + tested against this |
+| 0.55.4 | `main` (HEAD) | developed + tested against this |
 
 CI ([`.github/workflows/build.yml`](.github/workflows/build.yml)) builds against
 the Hyprland headers Arch ships, on every push/PR and weekly, so upstream API
