@@ -43,6 +43,14 @@ Add `exec-once = hyprpm reload -n` to `hyprland.conf` so it loads on start.
 Build deps beyond Hyprland headers: `pangocairo`, `libpulse`, `libsystemd`
 (sd-bus), `librsvg`, `cairo` — all present on any Arch/Hyprland box.
 
+> [!TIP]
+> Install [pyprland](https://github.com/hyprland-community/pyprland) alongside
+> hyprstatus. Click actions run arbitrary commands, and pyprland's scratchpads
+> are what turn them into Waybar-style dropdowns — `pypr toggle audio` slides a
+> floating mixer out from under the bar instead of opening a normal window
+> (that's what the demo shows). [`example/pyprland.toml`](example/pyprland.toml)
+> ships ready-made scratchpads for the example config's network/audio dropdowns.
+
 For development: `cmake -B build -S . && cmake --build build` then
 `hyprctl plugin load "$PWD/build/hyprstatus.so"` (absolute path required).
 
@@ -75,7 +83,7 @@ allowed (only the first two commas split):
 ```ini
 hyprstatus-set = clock, format, %a, %b %d   %I:%M %p
 hyprstatus-set = battery, states.warning, 20
-hyprstatus-set = network, on-click-right, pypr toggle nmtui
+hyprstatus-set = network, on-click-right, pypr toggle nmtui   # pyprland dropdown
 ```
 
 Custom script modules are Waybar-compatible (`return-type json` with
