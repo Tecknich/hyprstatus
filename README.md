@@ -50,6 +50,7 @@ Build deps beyond Hyprland headers: `pangocairo`, `libpulse`, `libsystemd`
 > floating mixer out from under the bar instead of opening a normal window
 > (that's what the demo shows). [`example/pyprland.toml`](example/pyprland.toml)
 > ships ready-made scratchpads for the example config's network/audio dropdowns.
+> If you don't want to, that's fine too. The example config provides alternatives.
 
 For development: `cmake -B build -S . && cmake --build build` then
 `hyprctl plugin load "$PWD/build/hyprstatus.so"` (absolute path required).
