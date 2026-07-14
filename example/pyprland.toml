@@ -1,0 +1,38 @@
+# Pyprland scratchpads that pair with example/hyprstatus.conf.
+# Read from ~/.config/pypr/config.toml.
+#
+# hyprstatus click actions run arbitrary commands; pyprland's scratchpads are
+# what turn them into Waybar-style dropdowns - `pypr toggle audio` slides a
+# floating mixer out from under the bar instead of launching a normal window.
+# Install: https://github.com/hyprland-community/pyprland
+#   (pacman -S pyprland | pipx install pyprland)
+# Start it from hyprland.conf:  exec-once = pypr
+#
+# `position` is "x y" as a percentage of the monitor; with a top bar,
+# animation = "fromTop" + a small y drops the pad right below the bar.
+
+[pyprland]
+plugins = ["scratchpads"]
+
+[scratchpads.audio]
+animation = "fromTop"
+command   = "pavucontrol"
+class     = "org.pulseaudio.pavucontrol"
+size      = "40% 62%"
+position  = "57% 5%"
+lazy      = true
+
+[scratchpads.nmtui]
+animation = "fromTop"
+command   = "kitty --class dropdown-nmtui -e nmtui"
+class     = "dropdown-nmtui"
+size      = "46% 64%"
+position  = "44% 5%"
+lazy      = true
+
+[scratchpads.term]
+animation = "fromTop"
+command   = "kitty --class dropdown-term"
+class     = "dropdown-term"
+size      = "75% 60%"
+lazy      = true
