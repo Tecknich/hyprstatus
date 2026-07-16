@@ -16,7 +16,6 @@
 #include <cstdlib>
 #include <filesystem>
 #include <format>
-#include <fstream>
 #include <map>
 #include <optional>
 #include <string_view>
@@ -28,12 +27,10 @@ namespace {
     constexpr const char* POWER_SUPPLY_DIR = "/sys/class/power_supply";
 
     std::optional<std::string> readTrimmed(const std::filesystem::path& path) {
-        std::ifstream f(path);
-        if (!f.is_open())
+        const auto LINE = Fmt::readLine(path.string());
+        if (!LINE)
             return std::nullopt;
-        std::string line;
-        std::getline(f, line);
-        return Fmt::trim(line);
+        return Fmt::trim(*LINE);
     }
 
     std::optional<long long> readLL(const std::filesystem::path& path) {

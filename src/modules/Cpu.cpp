@@ -6,12 +6,11 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
-#include <fstream>
 #include <map>
 #include <optional>
 #include <set>
-#include <sstream>
 #include <string>
+#include <vector>
 
 #include "../util/Format.hpp"
 
@@ -69,14 +68,18 @@ namespace {
             long               lastPct = 0;
         };
 
-        // Parse one already-label-stripped /proc/stat cpu line and compute its
-        // usage% across the interval, updating the caller's previous sample.
-        static long computeUsage(std::istringstream& iss, unsigned long long& prevTotal, unsigned long long& prevIdle, bool& hasPrev, long lastPct) {
-            unsigned long long v = 0, total = 0, idle = 0;
-            for (int i = 0; iss >> v; ++i) {
-                total += v;
+        // Parse one already-label-stripped /proc/stat cpu line (numeric fields
+        // only) and compute its usage% across the interval, updating the
+        // caller's previous sample.
+        static long computeUsage(const std::vector<std::string>& fields, unsigned long long& prevTotal, unsigned long long& prevIdle, bool& hasPrev, long lastPct) {
+            unsigned long long total = 0, idle = 0;
+            for (size_t i = 0; i < fields.size(); ++i) {
+                const auto V = Fmt::toULL(fields[i]);
+                if (!V)
+                    break;
+                total += *V;
                 if (i == 3 || i == 4) // idle + iowait
-                    idle += v;
+                    idle += *V;
             }
 
             long usage = lastPct;
@@ -95,39 +98,44 @@ namespace {
         // Reads the aggregate "cpu" line plus every "cpuN" per-core line. On read
         // failure, keeps the last good sample. Returns aggregate usage%.
         long sample() {
-            std::ifstream f("/proc/stat");
-            if (!f.is_open())
+            const auto CONTENT = Fmt::readFile("/proc/stat");
+            if (CONTENT.empty())
                 return m_lastUsage; // keep last good
 
-            std::string   line;
             std::set<int> seen;
             bool          gotAgg = false;
+            size_t        pos    = 0;
 
-            while (std::getline(f, line)) {
-                std::istringstream iss(line);
-                std::string        label;
-                if (!(iss >> label))
+            while (pos < CONTENT.size()) {
+                const auto EOL  = CONTENT.find('\n', pos);
+                const auto LINE = CONTENT.substr(pos, EOL == std::string::npos ? std::string::npos : EOL - pos);
+                pos             = EOL == std::string::npos ? CONTENT.size() : EOL + 1;
+
+                auto toks = Fmt::tokens(LINE);
+                if (toks.empty())
                     continue;
-                if (label.compare(0, 3, "cpu") != 0)
+                const std::string LABEL = toks[0];
+                if (LABEL.compare(0, 3, "cpu") != 0)
                     break; // past the cpu block (intr, ctxt, ...)
+                toks.erase(toks.begin());
 
-                if (label == "cpu") {
-                    m_lastUsage = computeUsage(iss, m_prevTotal, m_prevIdle, m_hasPrev, m_lastUsage);
+                if (LABEL == "cpu") {
+                    m_lastUsage = computeUsage(toks, m_prevTotal, m_prevIdle, m_hasPrev, m_lastUsage);
                     gotAgg      = true;
                     continue;
                 }
 
                 // per-core line: ^cpu[0-9]+
-                const std::string DIGITS = label.substr(3);
+                const std::string DIGITS = LABEL.substr(3);
                 if (DIGITS.empty() || !std::all_of(DIGITS.begin(), DIGITS.end(), [](unsigned char ch) { return std::isdigit(ch) != 0; }))
                     continue;
-                int idx = 0;
-                try {
-                    idx = std::stoi(DIGITS);
-                } catch (...) { continue; }
+                const auto IDX = Fmt::toLL(DIGITS);
+                if (!IDX || *IDX < 0 || *IDX > 4096)
+                    continue;
+                const int idx = (int)*IDX;
 
                 auto& c   = m_cores[idx];
-                c.lastPct = computeUsage(iss, c.prevTotal, c.prevIdle, c.hasPrev, c.lastPct);
+                c.lastPct = computeUsage(toks, c.prevTotal, c.prevIdle, c.hasPrev, c.lastPct);
                 seen.insert(idx);
             }
 

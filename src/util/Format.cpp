@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <charconv>
 #include <cstdio>
 #include <cstdlib>
 #include <ctime>
@@ -18,6 +19,85 @@ namespace {
 }
 
 namespace Fmt {
+    std::string readFile(const std::string& path) {
+        FILE* f = std::fopen(path.c_str(), "re");
+        if (!f)
+            return "";
+        std::string out;
+        char        buf[4096];
+        size_t      n = 0;
+        while ((n = std::fread(buf, 1, sizeof(buf), f)) > 0)
+            out.append(buf, n);
+        const bool ERR = std::ferror(f) != 0;
+        std::fclose(f);
+        return ERR ? std::string{} : out;
+    }
+
+    std::optional<std::string> readLine(const std::string& path) {
+        FILE* f = std::fopen(path.c_str(), "re");
+        if (!f)
+            return std::nullopt;
+        std::string line;
+        char        buf[1024];
+        if (std::fgets(buf, sizeof(buf), f))
+            line = buf;
+        else if (std::ferror(f)) {
+            std::fclose(f);
+            return std::nullopt;
+        }
+        std::fclose(f);
+        while (!line.empty() && (line.back() == '\n' || line.back() == '\r'))
+            line.pop_back();
+        return line;
+    }
+
+    std::vector<std::string> tokens(const std::string& s) {
+        std::vector<std::string> out;
+        const auto               ISWS = [](char c) { return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f' || c == '\v'; };
+        size_t                   i    = 0;
+        while (i < s.size()) {
+            while (i < s.size() && ISWS(s[i]))
+                ++i;
+            size_t j = i;
+            while (j < s.size() && !ISWS(s[j]))
+                ++j;
+            if (j > i)
+                out.emplace_back(s.substr(i, j - i));
+            i = j;
+        }
+        return out;
+    }
+
+    std::optional<long long> toLL(std::string_view s, int base) {
+        long long v = 0;
+        if (!s.empty() && s.front() == '+')
+            s.remove_prefix(1);
+        const auto [PTR, EC] = std::from_chars(s.data(), s.data() + s.size(), v, base);
+        if (EC == std::errc::result_out_of_range || PTR == s.data())
+            return std::nullopt;
+        return v;
+    }
+
+    std::optional<unsigned long long> toULL(std::string_view s, int base) {
+        unsigned long long v = 0;
+        if (!s.empty() && s.front() == '+')
+            s.remove_prefix(1);
+        const auto [PTR, EC] = std::from_chars(s.data(), s.data() + s.size(), v, base);
+        if (EC == std::errc::result_out_of_range || PTR == s.data())
+            return std::nullopt;
+        return v;
+    }
+
+    std::optional<double> toDouble(std::string_view s) {
+        double v = 0;
+        if (!s.empty() && s.front() == '+')
+            s.remove_prefix(1);
+        const auto [PTR, EC] = std::from_chars(s.data(), s.data() + s.size(), v);
+        if (EC == std::errc::result_out_of_range || PTR == s.data())
+            return std::nullopt;
+        return v;
+    }
+
     std::string replaceTokens(const std::string& fmt, const std::map<std::string, std::string>& tokens) {
         std::string out;
         out.reserve(fmt.size());
