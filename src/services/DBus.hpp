@@ -35,5 +35,13 @@ namespace DBus {
     // cycle only within one instance's life).
     void onReconnect(bool systemBus, const std::string& key, std::function<void()> cb);
 
+    // PLUGIN_INIT: re-arm after a previous shutdown(). Normally a fresh dlopen
+    // starts with fresh statics, but if dlclose() was silently refused (glibc
+    // keeps a DSO resident on a leaked dlopen ref, NODELETE marking, ...) a
+    // "re-load" re-runs PLUGIN_INIT on the OLD statics — where shutdown() left
+    // the g_dead latch set and every session()/system() call returning nullptr
+    // forever (observed live: tray + power-profiles dead after a wedged reload).
+    void init();
+
     void shutdown(); // PLUGIN_EXIT: remove fd sources, unref buses, drop callbacks
 }

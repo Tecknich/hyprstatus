@@ -2,7 +2,6 @@
 #include "BarManager.hpp"
 
 #include <chrono>
-#include <sstream>
 
 #include <hyprland/src/Compositor.hpp>
 #include <hyprland/src/desktop/view/Window.hpp>
@@ -23,6 +22,7 @@
 #include "../render/Markup.hpp"
 #include "../render/TextCache.hpp"
 #include "../services/Signals.hpp"
+#include "../util/Format.hpp"
 #include "../util/Json.hpp"
 
 // Only one CBarManager ever exists (g_barManager); the header exposes no slots
@@ -32,12 +32,7 @@ static UP<SEventLoopDoLaterLock> g_reservedLater;  // coalesces layoutChanged bu
 static UP<SEventLoopDoLaterLock> g_rebuildLater;
 
 static std::vector<std::string> splitWs(const std::string& s) {
-    std::vector<std::string> out;
-    std::istringstream       ss(s);
-    std::string              tok;
-    while (ss >> tok)
-        out.push_back(tok);
-    return out;
+    return Fmt::tokens(s);
 }
 
 // The tooltip is drawn just beyond the bar (a small gap past it) and clamped

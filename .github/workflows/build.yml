@@ -69,4 +69,19 @@ jobs:
             nm "$so" | grep ' u ' | c++filt | grep -vE ' (std|__gnu_cxx|__cxxabiv1)::'
             fail=1
           fi
+          # NODELETE guard (issue #12): the plugin must not reference anything
+          # libstdc++ defines as STB_GNU_UNIQUE (locale facets pulled in by
+          # <fstream>/<sstream>). On unique-emitting toolchains those guards
+          # land in (or bind from) the plugin and the loader pins the DSO,
+          # silently breaking dlclose()/`hyprctl plugin unload`.
+          libcxx=$(g++ -print-file-name=libstdc++.so.6)
+          nm -D --defined-only "$libcxx" | awk '$2=="u"{print $3}' | sort -u > /tmp/libcxx-unique.txt
+          bad=$(nm -u "$so" | awk '{print $NF}' | sort -u | comm -12 - /tmp/libcxx-unique.txt | wc -l)
+          if [ "$bad" = "0" ]; then
+            echo "OK:   no refs into libstdc++'s STB_GNU_UNIQUE set ($(wc -l < /tmp/libcxx-unique.txt) symbols checked)"
+          else
+            echo "FAIL: $bad undefined ref(s) into libstdc++'s STB_GNU_UNIQUE set (reintroduced <fstream>/<sstream>?):"
+            nm -u "$so" | awk '{print $NF}' | sort -u | comm -12 - /tmp/libcxx-unique.txt | c++filt
+            fail=1
+          fi
           [ "$fail" = "0" ] && echo "hyprstatus.so OK" || exit 1

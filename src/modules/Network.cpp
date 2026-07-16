@@ -14,23 +14,18 @@
 #include <cmath>
 #include <cstring>
 #include <filesystem>
-#include <fstream>
 #include <map>
 #include <optional>
-#include <sstream>
 
 #include "../util/Format.hpp"
 
 namespace {
 
     std::optional<long long> readLL(const std::string& path) {
-        std::ifstream f(path);
-        if (!f.is_open())
+        const auto LINE = Fmt::readLine(path);
+        if (!LINE)
             return std::nullopt;
-        long long v = 0;
-        if (!(f >> v))
-            return std::nullopt;
-        return v;
+        return Fmt::toLL(Fmt::trim(*LINE));
     }
 
     // Connectivity gate: operstate is authoritative; carrier is the fallback for
@@ -38,12 +33,12 @@ namespace {
     // link (operstate "down"/"dormant"/... or carrier 0) counts as disconnected
     // even when the sysfs dir still exists (e.g. an explicitly configured iface).
     bool linkUp(const std::string& iface) {
-        std::ifstream f("/sys/class/net/" + iface + "/operstate");
-        std::string   state;
-        if (f >> state) {
-            if (state == "up")
+        const auto LINE  = Fmt::readLine("/sys/class/net/" + iface + "/operstate");
+        const auto STATE = LINE ? Fmt::trim(*LINE) : std::string{};
+        if (!STATE.empty()) {
+            if (STATE == "up")
                 return true;
-            if (state != "unknown")
+            if (STATE != "unknown")
                 return false;
         }
         // carrier read fails (EINVAL) while the iface is administratively down -> not up
@@ -51,18 +46,24 @@ namespace {
     }
 
     std::string defaultRouteIface() {
-        std::ifstream f("/proc/net/route");
-        if (!f.is_open())
+        const auto CONTENT = Fmt::readFile("/proc/net/route");
+        if (CONTENT.empty())
             return "";
-        std::string line;
-        std::getline(f, line); // header
-        while (std::getline(f, line)) {
-            std::istringstream iss(line);
-            std::string        iface, dest;
-            if (!(iss >> iface >> dest))
+        size_t pos   = 0;
+        bool   first = true; // header line
+        while (pos < CONTENT.size()) {
+            const auto EOL  = CONTENT.find('\n', pos);
+            const auto LINE = CONTENT.substr(pos, EOL == std::string::npos ? std::string::npos : EOL - pos);
+            pos             = EOL == std::string::npos ? CONTENT.size() : EOL + 1;
+            if (first) {
+                first = false;
                 continue;
-            if (dest == "00000000")
-                return iface;
+            }
+            const auto TOKS = Fmt::tokens(LINE);
+            if (TOKS.size() < 2)
+                continue;
+            if (TOKS[1] == "00000000")
+                return TOKS[0];
         }
         return "";
     }
@@ -87,23 +88,24 @@ namespace {
     };
 
     SWifiSignal wifiSignal(const std::string& iface) {
-        std::ifstream f("/proc/net/wireless");
-        if (!f.is_open())
+        const auto CONTENT = Fmt::readFile("/proc/net/wireless");
+        if (CONTENT.empty())
             return {};
-        std::string line;
-        while (std::getline(f, line)) {
-            std::istringstream iss(line);
-            std::string        name, status, quality, level;
-            if (!(iss >> name >> status >> quality >> level))
+        size_t pos = 0;
+        while (pos < CONTENT.size()) {
+            const auto EOL  = CONTENT.find('\n', pos);
+            const auto LINE = CONTENT.substr(pos, EOL == std::string::npos ? std::string::npos : EOL - pos);
+            pos             = EOL == std::string::npos ? CONTENT.size() : EOL + 1;
+
+            const auto TOKS = Fmt::tokens(LINE);
+            if (TOKS.size() < 4 || TOKS[0] != iface + ":")
                 continue;
-            if (name != iface + ":")
-                continue;
-            try {
-                // quality is X/70 on cfg80211; level is dBm
-                const auto Q = std::stod(quality);
-                const auto L = std::stod(level);
-                return {std::to_string(std::clamp<long>(std::lround(100.0 * Q / 70.0), 0, 100)), std::to_string(std::lround(L))};
-            } catch (...) { return {}; }
+            // quality is X/70 on cfg80211; level is dBm
+            const auto Q = Fmt::toDouble(TOKS[2]);
+            const auto L = Fmt::toDouble(TOKS[3]);
+            if (!Q || !L)
+                return {};
+            return {std::to_string(std::clamp<long>(std::lround(100.0 * *Q / 70.0), 0, 100)), std::to_string(std::lround(*L))};
         }
         return {};
     }

@@ -165,6 +165,14 @@ void DBus::onReconnect(bool systemBus, const std::string& key, std::function<voi
     (systemBus ? g_system : g_session).reconnectCbs[key] = std::move(cb);
 }
 
+void DBus::init() {
+    // Clear the shutdown latch so a PLUGIN_INIT that re-runs on resident
+    // statics (failed dlclose) gets working buses again. After shutdown() the
+    // rest of the state is already clean: buses disconnected, callbacks
+    // cleared, wanted=false, pump timer reset.
+    g_dead = false;
+}
+
 void DBus::shutdown() {
     g_dead = true;
     if (g_pumpTimer) {

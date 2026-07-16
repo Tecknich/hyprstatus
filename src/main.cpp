@@ -79,6 +79,7 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
 
     MainThread::init();
     RtSignals::init();
+    DBus::init(); // re-arm after a failed-dlclose re-init (see DBus.hpp)
     registerConfig();
     ModuleConfigStore::registerKeywords();
 

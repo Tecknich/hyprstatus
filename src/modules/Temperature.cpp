@@ -5,7 +5,6 @@
 #include <chrono>
 #include <cmath>
 #include <filesystem>
-#include <fstream>
 #include <map>
 #include <optional>
 #include <string>
@@ -27,15 +26,16 @@ namespace {
             if (m_path.empty())
                 return;
 
-            std::ifstream f(m_path);
-            long long     milli = 0;
-            if (!f.is_open() || !(f >> milli)) {
+            const auto LINE  = Fmt::readLine(m_path);
+            const auto MILLI = LINE ? Fmt::toLL(Fmt::trim(*LINE)) : std::nullopt;
+            if (!MILLI) {
                 if (m_valid) {
                     m_valid = false;
                     requestRedraw();
                 }
                 return;
             }
+            const long long milli = *MILLI;
 
             const long TC = std::lround(milli / 1000.0);
             const long TF = std::lround(milli / 1000.0 * 9.0 / 5.0 + 32.0);
@@ -91,12 +91,11 @@ namespace {
             auto                                        it = std::filesystem::directory_iterator("/sys/class/hwmon", ec);
             const std::filesystem::directory_iterator   end;
             for (; !ec && it != end; it.increment(ec)) {
-                const auto&   ENTRY = *it;
-                std::ifstream nf(ENTRY.path() / "name");
-                std::string   name;
-                if (!nf.is_open() || !std::getline(nf, name))
+                const auto& ENTRY = *it;
+                const auto  NAMEL = Fmt::readLine((ENTRY.path() / "name").string());
+                if (!NAMEL)
                     continue;
-                name = Fmt::trim(name);
+                const auto name = Fmt::trim(*NAMEL);
 
                 const auto IT = std::find_if(PREFERRED.begin(), PREFERRED.end(), [&name](const char* p) { return name == p; });
                 if (IT == PREFERRED.end())

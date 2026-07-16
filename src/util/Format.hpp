@@ -1,10 +1,33 @@
 #pragma once
 #include <map>
+#include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 // Waybar-flavored formatting helpers.
 namespace Fmt {
+    // ---- locale-free /proc & /sys readers -----------------------------------
+    // C++ streams (<fstream>/<sstream>) bind libstdc++'s locale-facet
+    // STB_GNU_UNIQUE symbols; the dynamic linker marks any DSO that binds a
+    // unique symbol NODELETE, which silently breaks dlclose() and therefore
+    // `hyprctl plugin unload` (stale plugin stays resident; reload re-inits the
+    // dead copy). These helpers replace every stream use in the plugin — do NOT
+    // reintroduce <fstream>/<sstream>/<iostream> anywhere. See issue #12.
+
+    // whole (small) file via stdio; empty string on any error
+    std::string readFile(const std::string& path);
+    // first line, trailing \n / \r stripped; nullopt only if the file cannot
+    // be opened or read (a readable-but-empty file yields "")
+    std::optional<std::string> readLine(const std::string& path);
+    // split on runs of whitespace, no empty tokens (the `iss >> tok` equivalent)
+    std::vector<std::string> tokens(const std::string& s);
+    // locale-independent numeric parses of a trimmed token (std::from_chars);
+    // nullopt when no number can be parsed at the start of the string
+    std::optional<long long>          toLL(std::string_view s, int base = 10);
+    std::optional<unsigned long long> toULL(std::string_view s, int base = 10);
+    std::optional<double>             toDouble(std::string_view s);
+
     // Replaces {key} and {key:>N} / {key:<N} (right/left pad to width N) with
     // tokens.at(key); unknown tokens become "". "{}" is an alias for
     // tokens.at("") if present, else tokens.at("text").

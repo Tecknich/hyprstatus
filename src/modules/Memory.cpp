@@ -4,8 +4,6 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
-#include <fstream>
-#include <limits>
 #include <map>
 #include <optional>
 #include <string>
@@ -23,27 +21,33 @@ namespace {
         }
 
         void update() override {
-            std::ifstream f("/proc/meminfo");
-            if (!f.is_open())
+            const auto CONTENT = Fmt::readFile("/proc/meminfo");
+            if (CONTENT.empty())
                 return;
 
             unsigned long long memTotal = 0, memAvail = 0, swapTotal = 0, swapFree = 0;
-            std::string        key;
-            unsigned long long val   = 0;
             int                found = 0;
-            while (found < 4 && f >> key >> val) {
-                f.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
-                if (key == "MemTotal:") {
-                    memTotal = val;
+            size_t             pos   = 0;
+            while (found < 4 && pos < CONTENT.size()) {
+                const auto EOL  = CONTENT.find('\n', pos);
+                const auto LINE = CONTENT.substr(pos, EOL == std::string::npos ? std::string::npos : EOL - pos);
+                pos             = EOL == std::string::npos ? CONTENT.size() : EOL + 1;
+
+                const auto TOKS = Fmt::tokens(LINE);
+                if (TOKS.size() < 2)
+                    continue;
+                const auto VAL = Fmt::toULL(TOKS[1]).value_or(0);
+                if (TOKS[0] == "MemTotal:") {
+                    memTotal = VAL;
                     found++;
-                } else if (key == "MemAvailable:") {
-                    memAvail = val;
+                } else if (TOKS[0] == "MemAvailable:") {
+                    memAvail = VAL;
                     found++;
-                } else if (key == "SwapTotal:") {
-                    swapTotal = val;
+                } else if (TOKS[0] == "SwapTotal:") {
+                    swapTotal = VAL;
                     found++;
-                } else if (key == "SwapFree:") {
-                    swapFree = val;
+                } else if (TOKS[0] == "SwapFree:") {
+                    swapFree = VAL;
                     found++;
                 }
             }
