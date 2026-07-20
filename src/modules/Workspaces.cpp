@@ -2,7 +2,12 @@
 #include <hyprland/src/Compositor.hpp>
 #include <hyprland/src/desktop/Workspace.hpp>
 #include <hyprland/src/event/EventBus.hpp>
+// 0.56 moved CMonitor: helpers/Monitor.hpp -> output/Monitor.hpp
+#if __has_include(<hyprland/src/output/Monitor.hpp>)
+#include <hyprland/src/output/Monitor.hpp>
+#else
 #include <hyprland/src/helpers/Monitor.hpp>
+#endif
 #include <hyprland/src/managers/KeybindManager.hpp>
 #include <hyprland/src/managers/eventLoop/EventLoopManager.hpp>
 
@@ -12,6 +17,7 @@
 #include <vector>
 
 #include "../util/Format.hpp"
+#include "../util/HyprCompat.hpp"
 #include "Factories.hpp"
 
 namespace {
@@ -43,7 +49,7 @@ class CWorkspacesModule : public IModule {
         // CWorkspace::m_events.renamed signal fires. Watch every live
         // workspace now, and each newly created one above, so the bar
         // redraws after `hyprctl dispatch renameworkspace ...`.
-        for (const auto& WS : g_pCompositor->getWorkspacesCopy())
+        for (const auto& WS : Compat::workspacesCopy())
             watchRename(WS);
     }
 
@@ -63,7 +69,7 @@ class CWorkspacesModule : public IModule {
         };
         std::vector<SEntry> entries;
 
-        for (const auto& WS : g_pCompositor->getWorkspacesCopy()) {
+        for (const auto& WS : Compat::workspacesCopy()) {
             if (!WS || WS->inert())
                 continue;
             if (WS->monitorID() != mon->m_id)
@@ -114,7 +120,7 @@ class CWorkspacesModule : public IModule {
         // is parsed as a RELATIVE jump by the `workspace` dispatcher, so named
         // (id < 0) and special workspaces must be dispatched by name.
         const WORKSPACEID ID = (int64_t)seg.id;
-        if (const auto WS = g_pCompositor->getWorkspaceByID(ID); WS && !WS->inert()) {
+        if (const auto WS = Compat::workspaceByID(ID); WS && !WS->inert()) {
             if (WS->m_isSpecialWorkspace) {
                 // togglespecialworkspace prepends "special:"; m_name is
                 // "special:<n>" (or "special:special" for the default).
