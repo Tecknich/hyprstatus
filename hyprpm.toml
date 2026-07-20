@@ -1,12 +1,16 @@
 [repository]
 name = "hyprstatus"
 authors = ["Tecknich"]
-# NOTE: no commit_pins. A pin makes `hyprpm add`/`update` reset to the pinned
-# commit and build THAT, which freezes an actively-developed repo at an old tree
-# (and silently drops everything merged since). Tracking repo HEAD keeps every
-# `hyprpm update` on the latest main. Re-introduce commit_pins only for a real
-# multi-Hyprland-version distribution, pointing each entry at a tagged/stable
-# commit and bumping it per release.
+# commit_pins map a Hyprland release to a known-good hyprstatus commit: users on
+# that release build the pin; anything newer (or unpinned) builds repo HEAD.
+# Pin ONLY superseded releases at the last commit verified against them, and add
+# a new pin each time a Hyprland release is left behind — never pin the current
+# release to a moving target (a stale pin silently freezes users on old code;
+# that regression already happened once, see PR #10).
+commit_pins = [
+    # Hyprland 0.55.4 -> last hyprstatus commit developed+daily-driven on it
+    ["a0136d8c04687bb36eb8a28eb9d1ff92aea99704", "7a0ba0b5bb042a90b2a0539b0974565286783e97"],
+]
 
 [hyprstatus]
 description = "Compositor-rendered status bar for Hyprland — a Waybar replacement that lives inside the compositor"

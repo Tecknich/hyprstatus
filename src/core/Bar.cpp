@@ -3,7 +3,12 @@
 
 #include <hyprland/src/config/shared/complex/ComplexDataTypes.hpp>
 #include <hyprland/src/config/shared/parserUtils/ParserUtils.hpp>
+// 0.56 moved CMonitor: helpers/Monitor.hpp -> output/Monitor.hpp
+#if __has_include(<hyprland/src/output/Monitor.hpp>)
+#include <hyprland/src/output/Monitor.hpp>
+#else
 #include <hyprland/src/helpers/Monitor.hpp>
+#endif
 #include <hyprland/src/managers/input/InputManager.hpp>
 #include <hyprland/src/render/OpenGL.hpp>
 #include <hyprland/src/render/Renderer.hpp>

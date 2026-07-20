@@ -1,7 +1,12 @@
 #define WLR_USE_UNSTABLE
 #include "BarPassElement.hpp"
 
+// 0.56 moved CMonitor: helpers/Monitor.hpp -> output/Monitor.hpp
+#if __has_include(<hyprland/src/output/Monitor.hpp>)
+#include <hyprland/src/output/Monitor.hpp>
+#else
 #include <hyprland/src/helpers/Monitor.hpp>
+#endif
 
 #include "../core/Bar.hpp"
 #include "../core/BarManager.hpp"
