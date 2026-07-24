@@ -20,7 +20,12 @@
 #define WLR_USE_UNSTABLE
 #include <hyprland/src/Compositor.hpp>
 #include <hyprland/src/config/shared/complex/ComplexDataTypes.hpp>
+// 0.56 moved CMonitor: helpers/Monitor.hpp -> output/Monitor.hpp
+#if __has_include(<hyprland/src/output/Monitor.hpp>)
+#include <hyprland/src/output/Monitor.hpp>
+#else
 #include <hyprland/src/helpers/Monitor.hpp>
+#endif
 #include <hyprland/src/helpers/math/Math.hpp>
 #include <hyprland/src/managers/input/InputManager.hpp>
 #include <hyprland/src/render/OpenGL.hpp>
@@ -31,6 +36,7 @@
 #include "../services/DBus.hpp"
 #include "../services/MainThread.hpp"
 #include "../util/Format.hpp"
+#include "../util/HyprCompat.hpp"
 
 using namespace Render::GL;
 
@@ -1201,7 +1207,7 @@ namespace {
         std::set<int> neededPxSet() const {
             std::set<int> pxs;
             const double  SIZE = (double)g_cfg.trayIconSize->value();
-            for (const auto& MON : g_pCompositor->m_monitors) {
+            for (const auto& MON : Compat::monitors()) {
                 if (MON)
                     pxs.insert(std::max(1, (int)std::lround(SIZE * MON->m_scale)));
             }

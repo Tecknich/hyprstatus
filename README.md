@@ -140,16 +140,14 @@ Hyprland plugins are ABI-locked to the exact running compositor build and this
 one leans heavily on Hyprland's internal API, so it must be built against the
 version you run — always install via `hyprpm`, which does that for you.
 
-hyprstatus currently tracks repo **HEAD**: `hyprpm add` / `hyprpm update` builds
-the latest `main`, which targets the current Hyprland release. There are no
-`commit_pins` yet — once Hyprland moves past the tested version below, a
-`commit_pins` entry will pin that release to a known-good commit so existing
-users keep working code while `main` moves on to the next API (open an issue with
-your `hyprctl version` if a build breaks).
+`hyprpm add` / `hyprpm update` builds the `commit_pins` entry matching your
+Hyprland release, or repo **HEAD** when there is no pin (the current release).
+Open an issue with your `hyprctl version` if a build breaks.
 
 | Hyprland | hyprstatus | status |
 |---|---|---|
-| 0.55.4 | `main` (HEAD) | developed + tested against this |
+| 0.56.0 | `main` (HEAD) | source-compatible (built against v0.56.0 headers); runtime validation in progress |
+| 0.55.4 | pinned (`commit_pins`) | developed + daily-driven on this |
 
 CI ([`.github/workflows/build.yml`](.github/workflows/build.yml)) builds against
 the Hyprland headers Arch ships, on every push/PR and weekly, so upstream API

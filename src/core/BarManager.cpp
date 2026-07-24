@@ -7,7 +7,12 @@
 #include <hyprland/src/desktop/view/Window.hpp>
 #include <hyprland/src/desktop/reserved/ReservedArea.hpp>
 #include <hyprland/src/desktop/state/FocusState.hpp>
+// 0.56 moved CMonitor: helpers/Monitor.hpp -> output/Monitor.hpp
+#if __has_include(<hyprland/src/output/Monitor.hpp>)
+#include <hyprland/src/output/Monitor.hpp>
+#else
 #include <hyprland/src/helpers/Monitor.hpp>
+#endif
 #include <hyprland/src/helpers/time/Time.hpp>
 #include <hyprland/src/managers/SeatManager.hpp>
 #include <hyprland/src/managers/SessionLockManager.hpp>
@@ -23,6 +28,7 @@
 #include "../render/TextCache.hpp"
 #include "../services/Signals.hpp"
 #include "../util/Format.hpp"
+#include "../util/HyprCompat.hpp"
 #include "../util/Json.hpp"
 
 // Only one CBarManager ever exists (g_barManager); the header exposes no slots
@@ -185,7 +191,7 @@ void CBarManager::shutdown() {
 
     m_built = false;
 
-    for (auto& mon : g_pCompositor->m_monitors)
+    for (auto& mon : Compat::monitors())
         g_pHyprRenderer->damageMonitor(mon);
 }
 
@@ -249,7 +255,7 @@ void CBarManager::rebuild() {
 
 void CBarManager::buildBars() {
     m_bars.clear();
-    for (auto& mon : g_pCompositor->m_monitors) {
+    for (auto& mon : Compat::monitors()) {
         if (!mon || mon->isMirror())
             continue;
         if (wantsBarOnMonitor(mon))
@@ -289,12 +295,12 @@ void CBarManager::applyReserved(const PHLMONITOR& mon) {
 }
 
 void CBarManager::applyReservedAll() {
-    for (auto& mon : g_pCompositor->m_monitors)
+    for (auto& mon : Compat::monitors())
         applyReserved(mon);
 }
 
 void CBarManager::clearReservedAll() {
-    for (auto& mon : g_pCompositor->m_monitors) {
+    for (auto& mon : Compat::monitors()) {
         if (!mon)
             continue;
         mon->m_reservedArea.resetType(Desktop::RESERVED_DYNAMIC_TYPE_ERROR_BAR);
@@ -315,7 +321,7 @@ void CBarManager::onRenderStage(eRenderStage stage) {
         // *solitary* fullscreen window (one opaque client covering everything);
         // a fullscreen window with any other surface still emits the stage, so
         // check the monitor's fullscreen mode explicitly.
-        if (g_cfg.hideOnFullscreen->value() && PMONITOR->inFullscreenMode())
+        if (g_cfg.hideOnFullscreen->value() && Compat::monitorHasFullscreen(PMONITOR))
             return;
 
         g_pHyprRenderer->m_renderPass.add(makeUnique<CBarPassElement>(PMONITOR));
@@ -338,7 +344,7 @@ void CBarManager::onRenderStage(eRenderStage stage) {
         return;
 
     // no overlays while the bar is hidden over fullscreen
-    if (g_cfg.hideOnFullscreen->value() && PMONITOR->inFullscreenMode())
+    if (g_cfg.hideOnFullscreen->value() && Compat::monitorHasFullscreen(PMONITOR))
         return;
 
     // native popup menu (independent of the tooltips option): queue it for the
@@ -385,9 +391,9 @@ static bool pointClaimedAbove(const Vector2D& pos, const PHLMONITOR& mon) {
 
     PHLLS    ls;
     Vector2D surfaceCoords;
-    if (g_pCompositor->vectorToLayerSurface(pos, &mon->m_layerSurfaceLayers[3 /* overlay */], &surfaceCoords, &ls))
+    if (Compat::layerSurfaceAt(pos, &mon->m_layerSurfaceLayers[3 /* overlay */], &surfaceCoords, &ls))
         return true;
-    if (g_pCompositor->vectorToLayerSurface(pos, &mon->m_layerSurfaceLayers[2 /* top */], &surfaceCoords, &ls))
+    if (Compat::layerSurfaceAt(pos, &mon->m_layerSurfaceLayers[2 /* top */], &surfaceCoords, &ls))
         return true;
 
     return false;
@@ -653,7 +659,7 @@ bool CBarManager::visible() const {
 void CBarManager::toggleVisible() {
     m_runtimeVisible = !m_runtimeVisible;
     applyReservedAll();
-    for (auto& mon : g_pCompositor->m_monitors)
+    for (auto& mon : Compat::monitors())
         g_pHyprRenderer->damageMonitor(mon);
 }
 
