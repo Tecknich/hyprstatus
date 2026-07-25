@@ -29,15 +29,23 @@ class CWorkspacesModule : public IModule {
     void init() override {
         auto& EV = Event::bus()->m_events;
         m_listeners.push_back(EV.workspace.created.listen([this](const PHLWORKSPACEREF& ws) {
-            watchRename(ws.lock());
+            watchWorkspace(ws.lock());
             requestRedraw();
         }));
         m_listeners.push_back(EV.workspace.removed.listen([this](const PHLWORKSPACEREF& ws) {
             if (const auto WS = ws.lock())
-                m_renameListeners.erase(WS->m_id);
+                m_wsWatches.erase(WS->m_id);
             requestRedraw();
         }));
         m_listeners.push_back(EV.workspace.active.listen([this] { requestRedraw(); }));
+#ifdef HS_HYPRLAND_056
+        // special open/close/steal has a dedicated bus event on 0.56 — the
+        // special-active flip renders the same frame it happens. (On a steal
+        // only ONE event fires for the gaining monitor, but requestRedraw
+        // damages every bar and segments() reads m_activeSpecialWorkspace
+        // live, so the losing monitor repaints correctly too.)
+        m_listeners.push_back(EV.workspace.specialActive.listen([this](PHLWORKSPACE, PHLMONITOR) { requestRedraw(); }));
+#endif
         m_listeners.push_back(EV.workspace.moveToMonitor.listen([this] { requestRedraw(); }));
         m_listeners.push_back(EV.window.moveToWorkspace.listen([this] { requestRedraw(); }));
         m_listeners.push_back(EV.window.urgent.listen([this] { requestRedraw(); }));
@@ -48,9 +56,10 @@ class CWorkspacesModule : public IModule {
         // Workspace renames have NO bus event; only the per-object
         // CWorkspace::m_events.renamed signal fires. Watch every live
         // workspace now, and each newly created one above, so the bar
-        // redraws after `hyprctl dispatch renameworkspace ...`.
+        // redraws after `hyprctl dispatch renameworkspace ...`. (On 0.55
+        // the same watch also covers special toggles — see watchWorkspace.)
         for (const auto& WS : Compat::workspacesCopy())
-            watchRename(WS);
+            watchWorkspace(WS);
     }
 
     std::vector<SSegment> segments(PHLMONITOR mon) override {
@@ -59,6 +68,10 @@ class CWorkspacesModule : public IModule {
 
         const auto FORMAT      = opt("format", "{name}");
         const bool SHOWSPECIAL = optBool("show-special", false);
+
+        // the special workspace currently open on THIS monitor (both versions
+        // expose CMonitor::m_activeSpecialWorkspace); null = none
+        const auto ACTIVESPECIAL = mon->m_activeSpecialWorkspace;
 
         struct SEntry {
             WORKSPACEID id      = 0;
@@ -74,7 +87,9 @@ class CWorkspacesModule : public IModule {
                 continue;
             if (WS->monitorID() != mon->m_id)
                 continue;
-            if (WS->m_isSpecialWorkspace && !SHOWSPECIAL)
+            // an ACTIVE special is always shown, even with show-special=false:
+            // the whole point of the indicator is seeing that one is open
+            if (WS->m_isSpecialWorkspace && !SHOWSPECIAL && WS != ACTIVESPECIAL)
                 continue;
             entries.push_back({WS->m_id, WS->m_name, WS->m_isSpecialWorkspace, WS->hasUrgentWindow(), false});
         }
@@ -103,7 +118,9 @@ class CWorkspacesModule : public IModule {
             seg.text      = Fmt::replaceTokens(FORMAT, {{"id", std::to_string(E.id)}, {"name", E.name}});
             seg.hoverable = true;
             seg.id        = (size_t)(int64_t)E.id;
-            if (E.id == ACTIVEID)
+            if (E.special && ACTIVESPECIAL && E.id == ACTIVESPECIAL->m_id)
+                seg.cls = "special-active";
+            else if (E.id == ACTIVEID)
                 seg.cls = "active";
             else if (E.urgent)
                 seg.cls = "urgent";
@@ -161,14 +178,30 @@ class CWorkspacesModule : public IModule {
         });
     }
 
-    // Subscribe to a workspace's per-object renamed signal (no bus event
-    // exists for renames). Idempotent per workspace id.
-    void watchRename(const PHLWORKSPACE& ws) {
+    // Per-object CWorkspace signal subscriptions (things with no bus event).
+    // Idempotent per workspace id; entries die with the workspace (removed
+    // handler) or with the module.
+    void watchWorkspace(const PHLWORKSPACE& ws) {
         if (!ws || ws->inert())
             return;
-        if (m_renameListeners.contains(ws->m_id))
+        if (m_wsWatches.contains(ws->m_id))
             return;
-        m_renameListeners.emplace(ws->m_id, ws->m_events.renamed.listen([this] { requestRedraw(); }));
+        auto& W   = m_wsWatches[ws->m_id];
+        W.renamed = ws->m_events.renamed.listen([this] { requestRedraw(); });
+#ifndef HS_HYPRLAND_056
+        // 0.55.4's CMonitor::setSpecialWorkspace emits NO bus event at all
+        // (workspace.active only fires in changeWorkspace; specialActive does
+        // not exist yet). The only in-process notifications are the per-object
+        // signals on the special workspace itself: activeChanged on open /
+        // close / replace, monitorChanged when another monitor steals a
+        // visible special. Watch both so the special-active flip repaints
+        // without waiting for an unrelated redraw. 0.56 uses the gated
+        // workspace.specialActive bus listener in init() instead.
+        if (ws->m_isSpecialWorkspace) {
+            W.activeChanged  = ws->m_events.activeChanged.listen([this] { requestRedraw(); });
+            W.monitorChanged = ws->m_events.monitorChanged.listen([this] { requestRedraw(); });
+        }
+#endif
     }
 
     std::vector<WORKSPACEID> persistentIDs(const PHLMONITOR& mon) const {
@@ -188,9 +221,17 @@ class CWorkspacesModule : public IModule {
         return ids;
     }
 
-    std::vector<CHyprSignalListener>                        m_listeners;
-    std::unordered_map<WORKSPACEID, CHyprSignalListener>    m_renameListeners; // per-workspace renamed hooks
-    UP<SEventLoopDoLaterLock>                               m_dispatchLater;   // RAII-cancelled pending dispatch
+    struct SWorkspaceWatch {
+        CHyprSignalListener renamed;
+#ifndef HS_HYPRLAND_056
+        CHyprSignalListener activeChanged;  // 0.55 only: special toggled on/off (no bus event)
+        CHyprSignalListener monitorChanged; // 0.55 only: special stolen by another monitor
+#endif
+    };
+
+    std::vector<CHyprSignalListener>                     m_listeners;
+    std::unordered_map<WORKSPACEID, SWorkspaceWatch>     m_wsWatches;     // per-workspace object-signal hooks
+    UP<SEventLoopDoLaterLock>                            m_dispatchLater; // RAII-cancelled pending dispatch
 };
 
 } // namespace
