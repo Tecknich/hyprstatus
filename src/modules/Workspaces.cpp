@@ -32,9 +32,13 @@ class CWorkspacesModule : public IModule {
             watchWorkspace(ws.lock());
             requestRedraw();
         }));
-        m_listeners.push_back(EV.workspace.removed.listen([this](const PHLWORKSPACEREF& ws) {
-            if (const auto WS = ws.lock())
-                m_wsWatches.erase(WS->m_id);
+        m_listeners.push_back(EV.workspace.removed.listen([this](const PHLWORKSPACEREF&) {
+            // removed is emitted from ~CWorkspace, where the payload's weak ref
+            // can no longer lock() (hyprutils sets destroying() first) — so the
+            // id is unreadable here. Sweep expired watches instead; leaving one
+            // behind would make watchWorkspace skip a later workspace that
+            // reuses the id (specials reuse their negative ids every toggle).
+            std::erase_if(m_wsWatches, [](const auto& P) { return P.second.ws.expired(); });
             requestRedraw();
         }));
         m_listeners.push_back(EV.workspace.active.listen([this] { requestRedraw(); }));
@@ -184,9 +188,13 @@ class CWorkspacesModule : public IModule {
     void watchWorkspace(const PHLWORKSPACE& ws) {
         if (!ws || ws->inert())
             return;
-        if (m_wsWatches.contains(ws->m_id))
-            return;
+        if (const auto IT = m_wsWatches.find(ws->m_id); IT != m_wsWatches.end()) {
+            if (IT->second.ws.lock() == ws)
+                return;          // already watching this exact object
+            m_wsWatches.erase(IT); // stale watch from a reused id — resubscribe
+        }
         auto& W   = m_wsWatches[ws->m_id];
+        W.ws      = ws;
         W.renamed = ws->m_events.renamed.listen([this] { requestRedraw(); });
 #ifndef HS_HYPRLAND_056
         // 0.55.4's CMonitor::setSpecialWorkspace emits NO bus event at all
@@ -222,6 +230,7 @@ class CWorkspacesModule : public IModule {
     }
 
     struct SWorkspaceWatch {
+        PHLWORKSPACEREF     ws; // identity + liveness: expired => sweep; object mismatch on a reused id => resubscribe
         CHyprSignalListener renamed;
 #ifndef HS_HYPRLAND_056
         CHyprSignalListener activeChanged;  // 0.55 only: special toggled on/off (no bus event)

@@ -357,20 +357,25 @@ void CBarManager::subscribeOverview(const SP<Event::CEventBus::CCustomEvent>& ev
 }
 
 void CBarManager::onOverviewEvent(const std::vector<Event::CEventBus::CCustomEvent::ValidVariant>& args) {
-    // contract: [monitor, open]. The monitor arrives as a weak ref
-    // (TYPE_MONITOR); a monitor NAME (TYPE_STRING) is accepted too so a benign
-    // emit-side change degrades to a no-op rather than hiding the wrong bar.
-    // Validate variant indices before std::get — emits are runtime-typed.
+    // gloview's contract: [monitor, name, open] — a weak TYPE_MONITOR ref, the
+    // monitor NAME (TYPE_STRING, convenience for name-keyed consumers), and the
+    // TYPE_BOOL open flag (see gloview src/overview.cpp registerOverviewEvent).
+    // Read the flag from the BACK so a benign emit-side change (e.g. dropping
+    // the redundant name) degrades gracefully; resolve the monitor from the ref
+    // first and fall back to any name string before the flag. Validate variant
+    // indices before std::get — emits are runtime-typed.
     using CE = Event::CEventBus::CCustomEvent;
-    if (args.size() != 2 || args[1].index() != CE::TYPE_BOOL)
+    if (args.size() < 2 || args.back().index() != CE::TYPE_BOOL)
         return;
 
     PHLMONITOR mon;
     if (args[0].index() == CE::TYPE_MONITOR)
         mon = std::get<PHLMONITORREF>(args[0]).lock();
-    else if (args[0].index() == CE::TYPE_STRING) {
+    for (size_t i = 0; !mon && i + 1 < args.size(); ++i) {
+        if (args[i].index() != CE::TYPE_STRING)
+            continue;
         for (const auto& M : Compat::monitors()) {
-            if (M && M->m_name == std::get<std::string>(args[0])) {
+            if (M && M->m_name == std::get<std::string>(args[i])) {
                 mon = M;
                 break;
             }
@@ -379,7 +384,7 @@ void CBarManager::onOverviewEvent(const std::vector<Event::CEventBus::CCustomEve
     if (!mon)
         return;
 
-    const bool OPEN    = std::get<bool>(args[1]);
+    const bool OPEN    = std::get<bool>(args.back());
     const bool CHANGED = OPEN ? m_overviewOpen.insert(mon->m_id).second : m_overviewOpen.erase(mon->m_id) > 0;
     if (CHANGED)
         g_pHyprRenderer->damageMonitor(mon); // repaint the strip: bar hides/reappears
@@ -526,6 +531,12 @@ void CBarManager::onMouseButton(const IPointer::SButtonEvent& e, Event::SCallbac
     // A press inside the popup is routed to it; a press anywhere else dismisses
     // the popup and is swallowed (standard click-away semantics).
     if (auto* const POPMOD = moduleWithPopup()) {
+        // Render-gated under an open overview: the menu is invisible, so the
+        // click belongs to the overview — dismiss silently, swallow nothing.
+        if (overviewHidden(POPMOD->popupMonitor().lock())) {
+            POPMOD->closePopup();
+            return;
+        }
         const auto MOUSE = g_pInputManager->getMouseCoordsInternal();
         m_consumedButtons.insert(e.button); // balance the eventual RELEASE
         info.cancelled = true;
@@ -632,6 +643,10 @@ void CBarManager::onMouseMove(const Vector2D& pos) {
     // While a popup menu is open it owns hover feedback; the module damages its
     // popup monitor when the highlighted entry changes. Suppress bar hover.
     if (auto* const POPMOD = moduleWithPopup()) {
+        // render-gated under an open overview (RENDER_LAST_MOMENT early-out):
+        // an invisible menu must not drive the cursor or its hover highlight
+        if (overviewHidden(POPMOD->popupMonitor().lock()))
+            return;
         POPMOD->popupHandleMotion(pos);
         applyCursor(CURSOR_POINTER); // best-effort: the popup area is interactive
         return;
@@ -641,8 +656,16 @@ void CBarManager::onMouseMove(const Vector2D& pos) {
     int   newIdx = -1;
 
     if (visible()) {
-        if ((newBar = barAt(m_bars, pos)))
-            newBar->hitTest(pos, &newIdx);
+        if ((newBar = barAt(m_bars, pos))) {
+            // Hidden under an open gloview overview: not drawn, so it must not
+            // hijack the cursor, set hover state, or arm the tooltip timer
+            // (same rule as onMouseButton/onMouseAxis). Collapse to "off all
+            // bars" instead of returning so stale hover/tooltips still clear.
+            if (overviewHidden(newBar->m_monitor.lock()))
+                newBar = nullptr;
+            else
+                newBar->hitTest(pos, &newIdx);
+        }
     }
 
     // Pointer-cursor feedback. Computed BEFORE newBar is collapsed to null for
