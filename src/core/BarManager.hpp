@@ -11,6 +11,7 @@
 #include <hyprland/src/event/EventBus.hpp>
 
 #include "../modules/Module.hpp"
+#include "../util/HyprCompat.hpp" // HS_HYPRLAND_056 gate
 #include "Bar.hpp"
 
 // Owns module instances, per-monitor bars, event listeners and the reserved
@@ -48,6 +49,12 @@ class CBarManager {
     bool wantsBarOnMonitor(const PHLMONITOR& mon) const;
     CBar* barForMonitor(const PHLMONITOR& mon);
 
+    // true while a gloview overview is open on this monitor and
+    // hide_on_overview is set — the bar is not drawn there, exactly like the
+    // hide_on_fullscreen gate. Driven by the "gloview:overview" custom bus
+    // event (Hyprland >= 0.56); always false on 0.55.
+    bool overviewHidden(const PHLMONITOR& mon) const;
+
     struct SLayout {
         std::vector<IModule*> left, center, right;
     } m_layout;
@@ -81,4 +88,20 @@ class CBarManager {
     // listeners (dropping = unsubscribing)
     CHyprSignalListener m_lRenderStage, m_lMonAdded, m_lMonRemoved, m_lMonLayout,
         m_lCfgPreReload, m_lCfgReloaded, m_lMouseButton, m_lMouseAxis, m_lMouseMove, m_lFullscreen;
+
+#ifdef HS_HYPRLAND_056
+    // ---- gloview overview interop (custom plugin bus events) ----
+    // LIFETIME RULE: hold ONLY CHyprSignalListeners here, never the
+    // SP<CCustomEvent> — co-owning gloview's event object would run its
+    // deleter (code inside gloview's .so) after gloview is dlclosed and crash
+    // the compositor. The SP is used transiently in subscribeOverview only.
+    void subscribeOverview(const SP<Event::CEventBus::CCustomEvent>& ev);
+    void onOverviewEvent(const std::vector<Event::CEventBus::CCustomEvent::ValidVariant>& args);
+    void clearOverviewState(); // forget all open overviews + damage (unhide bars)
+
+    std::unordered_set<uint64_t> m_overviewOpen;     // monitor ids with an open overview
+    CHyprSignalListener          m_lOverviewEvent;   // "gloview:overview" payload
+    CHyprSignalListener          m_lPluginEvAdded;   // gloview loads after us / reloads
+    CHyprSignalListener          m_lPluginEvRemoved; // gloview unloads
+#endif
 };

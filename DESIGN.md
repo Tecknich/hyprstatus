@@ -153,8 +153,9 @@ Waybar-compatible module option names (`format`, `interval`, `on-click`,
 | custom | exec engine | exec / exec-if / interval / streaming / return-type json ({text,alt,tooltip,class,percentage}) / format-icons by alt / signal SIGRTMIN+N (signalfd) / max-length / hide-when-empty / 5 pointer actions |
 
 Shipped since v1: DBusMenu popups, native notifications module, per-module box
-styling, colored calendar, active-special workspace indicator. Roadmap: native
-MPRIS, per-module bar instances, sliding animations, `hyprstatus-rule`
+styling, colored calendar, active-special workspace indicator, gloview overview
+interop (`hide_on_overview`, via 0.56 custom plugin bus events). Roadmap:
+native MPRIS, per-module bar instances, sliding animations, `hyprstatus-rule`
 per-monitor overrides, >2-level menus.
 
 ## Class → color

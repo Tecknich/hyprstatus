@@ -21,6 +21,7 @@ struct SGlobalConfig {
     SP<Config::Values::CIntValue>    borderSize;
     SP<Config::Values::CBoolValue>   blur;
     SP<Config::Values::CBoolValue>   hideOnFullscreen;
+    SP<Config::Values::CBoolValue>   hideOnOverview; // gloview interop; inert on Hyprland < 0.56
     SP<Config::Values::CBoolValue>   tooltips;
     SP<Config::Values::CIntValue>    tooltipDelayMs;
     SP<Config::Values::CStringValue> fontFamily;

@@ -41,6 +41,11 @@ static std::vector<std::string> splitWs(const std::string& s) {
     return Fmt::tokens(s);
 }
 
+#ifdef HS_HYPRLAND_056
+// gloview's overview open/close custom event: [monitor, open(bool)]
+static constexpr const char* OVERVIEW_EVENT = "gloview:overview";
+#endif
+
 // The tooltip is drawn just beyond the bar (a small gap past it) and clamped
 // on-monitor, so it lives OUTSIDE barBoxGlobal(): bar->damage() alone never
 // repaints it, and pass-element GL is clipped to the frame damage, so an
@@ -91,6 +96,9 @@ void CBarManager::init() {
         if (!mon)
             return;
         m_bars.erase(mon->m_id);
+#ifdef HS_HYPRLAND_056
+        m_overviewOpen.erase(mon->m_id); // never let a dead id linger (ids can be reused)
+#endif
     });
 
     // applyMonitorRule wipes the dynamic reserved slots and emits this event;
@@ -123,6 +131,27 @@ void CBarManager::init() {
     // observe only: cancelling move events would break focus-follows-mouse
     m_lMouseMove = events.input.mouse.move.listen(
         [this](Vector2D pos, Event::SCallbackInfo&) { onMouseMove(pos); });
+
+#ifdef HS_HYPRLAND_056
+    // gloview overview interop: hide the bar on a monitor while its overview is
+    // open. gloview may not be installed (the event never appears), may load
+    // after us, and may reload (event re-registered) — track all of that via
+    // the bus registry, poll-free.
+    if (const auto IT = events.plugin.find(OVERVIEW_EVENT); IT != events.plugin.end())
+        subscribeOverview(IT->second);
+
+    m_lPluginEvAdded = events.pluginEventAdded.listen([this](const SP<Event::CEventBus::CCustomEvent>& ev) {
+        if (ev && ev->m_name == OVERVIEW_EVENT)
+            subscribeOverview(ev);
+    });
+
+    m_lPluginEvRemoved = events.pluginEventRemoved.listen([this](const std::string& name) {
+        if (name != OVERVIEW_EVENT)
+            return;
+        m_lOverviewEvent.reset(); // eagerly: no further emits can come from a live gloview
+        clearOverviewState();     // nothing can be "open" anymore — unhide the bars
+    });
+#endif
 
     // one-shot, armed on hover start; fires once the tooltip delay elapses and
     // damages the hovered bar so a frame renders with the tooltip element.
@@ -188,6 +217,14 @@ void CBarManager::shutdown() {
     m_lMouseButton.reset();
     m_lMouseAxis.reset();
     m_lMouseMove.reset();
+#ifdef HS_HYPRLAND_056
+    // every listener into gloview's event/the bus dies BEFORE our dlclose —
+    // a leaked one would let the next emit call into unmapped code
+    m_lOverviewEvent.reset();
+    m_lPluginEvAdded.reset();
+    m_lPluginEvRemoved.reset();
+    m_overviewOpen.clear();
+#endif
 
     m_built = false;
 
@@ -308,6 +345,64 @@ void CBarManager::clearReservedAll() {
     }
 }
 
+#ifdef HS_HYPRLAND_056
+void CBarManager::subscribeOverview(const SP<Event::CEventBus::CCustomEvent>& ev) {
+    if (!ev)
+        return;
+    // subscribe through the SP but do NOT keep it (see BarManager.hpp lifetime
+    // rule); only the listener — whose code lives in libhyprutils — survives.
+    m_lOverviewEvent = ev->m_event.listen(
+        [this](const std::vector<Event::CEventBus::CCustomEvent::ValidVariant>& args) { onOverviewEvent(args); });
+    clearOverviewState(); // a (re)registered event starts from "all closed"
+}
+
+void CBarManager::onOverviewEvent(const std::vector<Event::CEventBus::CCustomEvent::ValidVariant>& args) {
+    // contract: [monitor, open]. The monitor arrives as a weak ref
+    // (TYPE_MONITOR); a monitor NAME (TYPE_STRING) is accepted too so a benign
+    // emit-side change degrades to a no-op rather than hiding the wrong bar.
+    // Validate variant indices before std::get — emits are runtime-typed.
+    using CE = Event::CEventBus::CCustomEvent;
+    if (args.size() != 2 || args[1].index() != CE::TYPE_BOOL)
+        return;
+
+    PHLMONITOR mon;
+    if (args[0].index() == CE::TYPE_MONITOR)
+        mon = std::get<PHLMONITORREF>(args[0]).lock();
+    else if (args[0].index() == CE::TYPE_STRING) {
+        for (const auto& M : Compat::monitors()) {
+            if (M && M->m_name == std::get<std::string>(args[0])) {
+                mon = M;
+                break;
+            }
+        }
+    }
+    if (!mon)
+        return;
+
+    const bool OPEN    = std::get<bool>(args[1]);
+    const bool CHANGED = OPEN ? m_overviewOpen.insert(mon->m_id).second : m_overviewOpen.erase(mon->m_id) > 0;
+    if (CHANGED)
+        g_pHyprRenderer->damageMonitor(mon); // repaint the strip: bar hides/reappears
+}
+
+void CBarManager::clearOverviewState() {
+    if (m_overviewOpen.empty())
+        return;
+    m_overviewOpen.clear();
+    for (auto& mon : Compat::monitors())
+        g_pHyprRenderer->damageMonitor(mon);
+}
+#endif
+
+bool CBarManager::overviewHidden(const PHLMONITOR& mon) const {
+#ifdef HS_HYPRLAND_056
+    return mon && g_cfg.hideOnOverview->value() && m_overviewOpen.contains(mon->m_id);
+#else
+    (void)mon;
+    return false; // no custom plugin events on 0.55 — nothing can hide us
+#endif
+}
+
 void CBarManager::onRenderStage(eRenderStage stage) {
     if (stage == RENDER_POST_WINDOWS) {
         if (!visible())
@@ -322,6 +417,10 @@ void CBarManager::onRenderStage(eRenderStage stage) {
         // a fullscreen window with any other surface still emits the stage, so
         // check the monitor's fullscreen mode explicitly.
         if (g_cfg.hideOnFullscreen->value() && Compat::monitorHasFullscreen(PMONITOR))
+            return;
+
+        // hide while a gloview overview is open on this monitor (0.56 interop)
+        if (overviewHidden(PMONITOR))
             return;
 
         g_pHyprRenderer->m_renderPass.add(makeUnique<CBarPassElement>(PMONITOR));
@@ -343,8 +442,10 @@ void CBarManager::onRenderStage(eRenderStage stage) {
     if (!PMONITOR)
         return;
 
-    // no overlays while the bar is hidden over fullscreen
+    // no overlays while the bar is hidden over fullscreen or an overview
     if (g_cfg.hideOnFullscreen->value() && Compat::monitorHasFullscreen(PMONITOR))
+        return;
+    if (overviewHidden(PMONITOR))
         return;
 
     // native popup menu (independent of the tooltips option): queue it for the
@@ -453,6 +554,11 @@ void CBarManager::onMouseButton(const IPointer::SButtonEvent& e, Event::SCallbac
     if (!PMONITOR->m_solitaryClient.expired())
         return;
 
+    // Same rule while hidden under a gloview overview: not drawn, so clicks
+    // belong to the overview, not to stale bar hit regions.
+    if (overviewHidden(PMONITOR))
+        return;
+
     if (pointClaimedAbove(MOUSE, PMONITOR))
         return; // do not consume
 
@@ -488,6 +594,10 @@ void CBarManager::onMouseAxis(const IPointer::SAxisEvent& e, Event::SCallbackInf
     // Not drawn over a solitary fullscreen window: do not swallow the scroll
     // (else a scroll on a fullscreen app silently dispatches workspace +1/-1).
     if (!PMONITOR->m_solitaryClient.expired())
+        return;
+
+    // not drawn under an open gloview overview either — same rule
+    if (overviewHidden(PMONITOR))
         return;
 
     if (pointClaimedAbove(MOUSE, PMONITOR))

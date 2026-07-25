@@ -14,6 +14,14 @@
 // commit_pin makes them unreachable.
 #include <hyprland/src/Compositor.hpp>
 
+// CMonitor's definition is needed by monitorHasFullscreen below; the header
+// moved in 0.56 (helpers/Monitor.hpp -> output/Monitor.hpp).
+#if __has_include(<hyprland/src/output/Monitor.hpp>)
+#include <hyprland/src/output/Monitor.hpp>
+#else
+#include <hyprland/src/helpers/Monitor.hpp>
+#endif
+
 #if __has_include(<hyprland/src/state/MonitorState.hpp>)
 #define HS_HYPRLAND_056 1
 #include <hyprland/src/state/MonitorState.hpp>
