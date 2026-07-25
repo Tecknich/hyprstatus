@@ -140,7 +140,7 @@ Waybar-compatible module option names (`format`, `interval`, `on-click`,
 
 | module | source | parity notes |
 |---|---|---|
-| workspaces | compositor state + workspace/monitor events | per-monitor, `persistent` list, active/urgent colors, click=switch, scroll=cycle |
+| workspaces | compositor state + workspace/monitor events | per-monitor, `persistent` list, active/urgent/special-active colors (an open special always shows, even with `show-special` off), click=switch, scroll=cycle |
 | window | focusState + window.title/active events | active title per monitor, max-length |
 | clock | strftime, boundary-aligned timer | tooltip = month calendar (text grid) |
 | cpu / memory / temperature | /proc/stat, /proc/meminfo, hwmon | waybar tokens |
@@ -153,15 +153,18 @@ Waybar-compatible module option names (`format`, `interval`, `on-click`,
 | custom | exec engine | exec / exec-if / interval / streaming / return-type json ({text,alt,tooltip,class,percentage}) / format-icons by alt / signal SIGRTMIN+N (signalfd) / max-length / hide-when-empty / 5 pointer actions |
 
 Shipped since v1: DBusMenu popups, native notifications module, per-module box
-styling, colored calendar. Roadmap: native MPRIS, per-module bar instances,
-sliding animations, `hyprstatus-rule` per-monitor overrides, >2-level menus.
+styling, colored calendar, active-special workspace indicator, gloview overview
+interop (`hide_on_overview`, via 0.56 custom plugin bus events). Roadmap:
+native MPRIS, per-module bar instances, sliding animations, `hyprstatus-rule`
+per-monitor overrides, >2-level menus.
 
 ## Class → color
 
 Modules attach a class (`warning`, `critical`, `charging`, `muted`,
 `has-updates`, `active`, …). Resolution: per-module `color.<class>` option →
 built-in semantic map (`warning→col.warn`, `critical→col.err`, `charging→col.ok`,
-`active→col.accent`, …) → module `color` option → global `col.foreground`.
+`active→col.accent`, `special-active→col.accent`, …) → module `color` option →
+global `col.foreground`.
 
 ## Lifecycle / safety rules (non-negotiable)
 

@@ -106,7 +106,9 @@ either `pkill -RTMIN+9 Hyprland` with `hyprstatus-set = mymod, signal, 9`, or
 
 ## Modules
 
-`workspaces` (persistent lists, urgent/active states, click/scroll switching) ·
+`workspaces` (persistent lists, urgent/active states, click/scroll switching;
+an open special workspace is always shown with the `special-active` class —
+accent by default, restyle via `color.special-active`) ·
 `window` · `clock` (colored waybar-style calendar tooltip; right-click for a
 full-year view) · `cpu` (per-core tooltip) · `memory` · `temperature` ·
 `battery` (instant AC plug/unplug via udev) · `network` ·
@@ -123,6 +125,16 @@ Id/Title or Passive status, and `hide-if-bt-disconnected = <item>=<device>`
 hides an item unless a BlueZ device matching `<device>` is connected right now
 (watched live over the system bus) — handy for apps like librepods that leave a
 tray item behind, with stale battery, after the bluetooth device disconnects.
+
+## Interop
+
+On Hyprland >= 0.56, hyprstatus listens for the `gloview:overview` custom bus
+event published by the [gloview](https://github.com/Tecknich/gloview) overview
+plugin: while an overview is open on a monitor, that monitor's bar hides —
+exactly like `hide_on_fullscreen` — and reappears when the overview closes.
+Controlled by `plugin:hyprstatus:hide_on_overview` (default on). Load order
+does not matter and gloview is optional: without it the event simply never
+fires. On 0.55 the option is accepted but inert.
 
 ## Known limitations
 

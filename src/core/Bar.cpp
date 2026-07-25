@@ -49,6 +49,7 @@ static std::optional<CHyprColor> parseColorString(const std::string& v) {
 static std::optional<CHyprColor> builtinClassColor(const std::string& cls) {
     static const std::unordered_map<std::string, SP<Config::Values::CColorValue> SGlobalConfig::*> MAP = {
         {"active", &SGlobalConfig::colAccent},   {"urgent", &SGlobalConfig::colErr},       {"warning", &SGlobalConfig::colWarn},
+        {"special-active", &SGlobalConfig::colAccent},
         {"critical", &SGlobalConfig::colErr},    {"charging", &SGlobalConfig::colOk},      {"plugged", &SGlobalConfig::colOk},
         {"muted", &SGlobalConfig::colErr},       {"has-updates", &SGlobalConfig::colWarn}, {"notification", &SGlobalConfig::colAccent},
         {"performance", &SGlobalConfig::colAccent}, {"power-saver", &SGlobalConfig::colOk},
