@@ -12,6 +12,7 @@ UP<IModule> createModuleByName(const SModuleConfig& cfg) {
         {"clock", makeClockModule},
         {"cpu", makeCpuModule},
         {"memory", makeMemoryModule},
+        {"gpu", makeGpuModule},
         {"temperature", makeTemperatureModule},
         {"battery", makeBatteryModule},
         {"network", makeNetworkModule},

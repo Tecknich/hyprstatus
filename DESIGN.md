@@ -144,6 +144,7 @@ Waybar-compatible module option names (`format`, `interval`, `on-click`,
 | window | focusState + window.title/active events | active title per monitor, max-length |
 | clock | strftime, boundary-aligned timer | tooltip = month calendar (text grid) |
 | cpu / memory / temperature | /proc/stat, /proc/meminfo, hwmon | waybar tokens |
+| gpu | NVML via `dlopen` (never linked, so CI/AMD-only boxes still build) or amdgpu sysfs (`gpu_busy_percent`, `mem_info_vram_*`, hwmon, `pp_dpm_*`) | auto-picks discrete, `device` = nvidia\|amd\|cardN\|PCI slot\|name substring; {usage}{vram*}{memUsage}{coreClock}{memClock}{power}{powerLimit}{temperatureC}{fanSpeed}; markup hover panel, every line past VRAM optional (an APU exposes no hwmon) |
 | battery | /sys/class/power_supply (energy_* and charge_*) | {icon}{capacity}{timeTo}{power}{health}, states warning/critical, charging/plugged formats |
 | network | route table + sysfs + /proc/net/wireless + SIOCGIWESSID + getifaddrs | wifi/ethernet/disconnected formats, {essid}{signalStrength}{ipaddr}{cidr}{bandwidth*Bits} |
 | pulseaudio | libpulse threaded mainloop (pipewire-pulse) | {icon}{volume}, port/bluetooth icon selection, muted format, scroll ±step clamped to max-volume, middle=mute default |

@@ -10,6 +10,7 @@ UP<IModule> makeWindowModule(const SModuleConfig&);
 UP<IModule> makeClockModule(const SModuleConfig&);
 UP<IModule> makeCpuModule(const SModuleConfig&);
 UP<IModule> makeMemoryModule(const SModuleConfig&);
+UP<IModule> makeGpuModule(const SModuleConfig&);
 UP<IModule> makeTemperatureModule(const SModuleConfig&);
 UP<IModule> makeBatteryModule(const SModuleConfig&);
 UP<IModule> makeNetworkModule(const SModuleConfig&);
