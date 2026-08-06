@@ -110,7 +110,9 @@ either `pkill -RTMIN+9 Hyprland` with `hyprstatus-set = mymod, signal, 9`, or
 an open special workspace is always shown with the `special-active` class —
 accent by default, restyle via `color.special-active`) ·
 `window` · `clock` (colored waybar-style calendar tooltip; right-click for a
-full-year view) · `cpu` (per-core tooltip) · `memory` · `temperature` ·
+full-year view) · `cpu` (per-core tooltip) · `memory` ·
+`gpu` (NVIDIA via NVML, AMD via amdgpu sysfs; hover panel with a VRAM bar,
+clocks, power, temperature and fan) · `temperature` ·
 `battery` (instant AC plug/unplug via udev) · `network` ·
 `pulseaudio` (PipeWire via pipewire-pulse) · `power-profiles` · `language` ·
 `submap` · `tray` (StatusNotifierItem host; native DBusMenu popups with
