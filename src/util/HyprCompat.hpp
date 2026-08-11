@@ -31,6 +31,15 @@
 #include <hyprland/src/desktop/state/ViewHitTester.hpp>
 #endif
 
+// The pointer manager moved to pointer/PointerManager.hpp (namespace Pointer) in
+// 0.56; raiseSoftwareCursor() below needs it, plus the render pass and clock.
+#if __has_include(<hyprland/src/pointer/PointerManager.hpp>)
+#define HS_HAS_POINTER_MGR 1
+#include <hyprland/src/pointer/PointerManager.hpp>
+#include <hyprland/src/helpers/time/Time.hpp>
+#include <hyprland/src/render/Renderer.hpp>
+#endif
+
 namespace Compat {
     inline const std::vector<PHLMONITOR>& monitors() {
 #ifdef HS_HYPRLAND_056
@@ -62,6 +71,32 @@ namespace Compat {
         return Fullscreen::controller()->hasFullscreen(mon);
 #else
         return mon->inFullscreenMode();
+#endif
+    }
+
+    // Re-queue the software cursor so it lands ABOVE everything queued so far.
+    //
+    // Hyprland renders the cursor and only THEN emits RENDER_LAST_MOMENT (0.56.2
+    // Renderer.cpp: renderSoftwareCursorsFor() in the `renderCursor` block, the
+    // stage emitted ~10 lines below it), and CRenderPass draws elements in
+    // insertion order with no way to reorder — m_passElements is private and the
+    // public API is only add()/clear()/removeAllOfType(). So anything a plugin
+    // draws at that stage necessarily paints OVER the pointer. Drawing the cursor
+    // a second time is what keeps our overlays above the top/overlay layers while
+    // still leaving the pointer visible on top of them.
+    //
+    // No-op while a healthy hardware cursor plane is up: that plane composites
+    // above the whole framebuffer anyway, and renderSoftwareCursorsFor() would
+    // then only re-send a frame callback to the cursor surface. Second call is
+    // otherwise idempotent — it re-adds one textured quad and re-stamps the same
+    // swRendered box.
+    inline void raiseSoftwareCursor(const PHLMONITOR& mon) {
+#ifdef HS_HAS_POINTER_MGR
+        if (!mon || !Pointer::mgr() || Pointer::mgr()->hasVisibleHWCursor(mon))
+            return;
+        Pointer::mgr()->renderSoftwareCursorsFor(mon, Time::steadyNow(), g_pHyprRenderer->m_renderData.damage);
+#else
+        (void)mon; // 0.55: pointer manager lived elsewhere; those users are commit-pinned
 #endif
     }
 

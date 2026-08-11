@@ -457,8 +457,11 @@ void CBarManager::onRenderStage(eRenderStage stage) {
     // monitor the popup is anchored on. While any popup is open, suppress bar
     // tooltips so they can't paint over/under the menu.
     if (auto* const POPMOD = moduleWithPopup()) {
-        if (POPMOD->popupMonitor().lock() == PMONITOR)
+        if (POPMOD->popupMonitor().lock() == PMONITOR) {
             g_pHyprRenderer->m_renderPass.add(makeUnique<CPopupPassElement>(PMONITOR));
+            // this stage draws after the cursor — put the pointer back on top
+            Compat::raiseSoftwareCursor(PMONITOR);
+        }
         return;
     }
 
@@ -478,6 +481,9 @@ void CBarManager::onRenderStage(eRenderStage stage) {
         return;
 
     g_pHyprRenderer->m_renderPass.add(makeUnique<CTooltipPassElement>(PMONITOR));
+    // a tall tooltip reaches under the pointer (the hover panels especially), and
+    // this stage draws after the cursor — put the pointer back on top
+    Compat::raiseSoftwareCursor(PMONITOR);
 }
 
 // bar under the cursor, or nullptr. Coordinates are global logical.
