@@ -60,6 +60,16 @@ above windows, below top/overlay layer-shell and the cursor. When a fullscreen
 window is "solitary" the stage isn't emitted — the bar auto-hides over
 fullscreen, which is the desired behavior.
 
+Popups and tooltips instead queue at `RENDER_LAST_MOMENT`, which is *above* the
+top/overlay layers — and above the cursor, because the compositor renders the
+software cursor a few lines **before** emitting that stage and the pass exposes
+no way to reorder (`m_passElements` is private; only `add()`/`clear()`/
+`removeAllOfType()`). Anything drawn there therefore paints over the pointer, so
+both call sites follow the `add()` with `Compat::raiseSoftwareCursor()`, which
+re-queues the cursor on top. It is a no-op when a hardware cursor plane is
+healthy, since that plane composites above the framebuffer regardless. Keep that
+pairing if you add another `RENDER_LAST_MOMENT` overlay.
+
 Text goes through `g_pHyprRenderer->renderText()` (pango under the hood),
 cached in TextCache keyed by content+style+scale. Boxes are computed in
 monitor-local *logical* pixels and scaled by `monitor->m_scale` only at draw
