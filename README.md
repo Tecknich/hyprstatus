@@ -168,6 +168,18 @@ CI ([`.github/workflows/build.yml`](.github/workflows/build.yml)) builds against
 the Hyprland headers Arch ships, on every push/PR and weekly, so upstream API
 drift surfaces as a red build rather than a broken install.
 
+> [!NOTE]
+> **The bar didn't come back after a system update?** The plugin refuses to load
+> when its ABI hash stops matching the compositor's, and that hash is a composite:
+> the Hyprland commit *plus* the major.minor of aquamarine, hyprutils, hyprgraphics,
+> hyprcursor and hyprlang. So a **dependency** bump breaks loading even when Hyprland
+> itself is unchanged — and hyprpm validates its cached headers on the Hyprland commit
+> alone, so `hyprpm update` can rebuild plugins against a stale `version.h`. Run
+> `hyprctl plugin load /var/cache/hyprpm/$USER/hyprstatus/hyprstatus.so` to see which
+> component differs, then `sudo hyprpm update -f` to force a header refresh. If the
+> plugin is the *newer* side, the compositor is what needs rebuilding — wait for your
+> distro to catch up rather than rebuilding the plugin again.
+
 **Tested environment:** Arch Linux, single monitor, PipeWire (`pipewire-pulse`),
 `power-profiles-daemon`, SwayNotificationCenter, and appindicator/SNI tray apps
 (NetworkManager, blueman, NordVPN). Other distros, notification daemons, and

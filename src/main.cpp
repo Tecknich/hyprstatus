@@ -11,6 +11,10 @@
 #include "services/DBus.hpp"
 #include "services/MainThread.hpp"
 #include "services/Signals.hpp"
+#include "util/Format.hpp"
+
+#include <algorithm>
+#include <string>
 
 static SP<SHyprCtlCommand> g_ctlCommand;
 
@@ -70,14 +74,48 @@ static void registerConfig() {
         REG(v);
 }
 
+// Name the component behind an ABI-hash mismatch. The plugin hash is a COMPOSITE
+// (see __hyprland_api_get_client_hash in PluginAPI.hpp):
+//   <hyprland commit>_aq_<aquamarine>_hu_<hyprutils>_hg_<hyprgraphics>_hc_<hyprcursor>_hlg_<hyprlang>
+// with each dependency stripped to major.minor. So a distro that ships a dependency
+// minor bump BEFORE rebuilding Hyprland trips this even though the compositor commit
+// matches, and the old "run hyprpm update" advice is then actively wrong: rebuilding
+// only makes the plugin newer still. Report which token differs so the direction is
+// obvious (plugin older -> rebuild the plugin; plugin newer -> Hyprland must be
+// rebuilt against the new dependency, or the dependency downgraded).
+static std::string abiMismatchDetail(const std::string& server, const std::string& client) {
+    const auto S = Fmt::split(server, '_');
+    const auto C = Fmt::split(client, '_');
+    if (S.empty() || C.empty())
+        return "";
+
+    const auto SHORT = [](const std::string& h) { return h.size() > 10 ? h.substr(0, 10) : h; };
+    if (S[0] != C[0])
+        return "hyprland commit " + SHORT(C[0]) + " (plugin) != " + SHORT(S[0]) + " (running)";
+
+    // remaining tokens are key/value pairs: aq 0.15 hu 0.14 ...
+    std::string out;
+    for (size_t i = 1; i + 1 < std::min(S.size(), C.size()); i += 2) {
+        if (S[i] != C[i] || S[i + 1] != C[i + 1]) {
+            if (!out.empty())
+                out += ", ";
+            out += C[i] + " " + C[i + 1] + " (plugin) != " + S[i + 1] + " (running)";
+        }
+    }
+    return out;
+}
+
 APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
     PHANDLE = handle;
 
-    const std::string HASH = __hyprland_api_get_hash();
-    if (HASH != __hyprland_api_get_client_hash()) {
-        HyprlandAPI::addNotification(PHANDLE, "[hyprstatus] Version mismatch (headers != running Hyprland). Run `hyprpm update`.",
-                                     CHyprColor{1.0, 0.2, 0.2, 1.0}, 8000);
-        throw std::runtime_error("[hyprstatus] version mismatch");
+    const std::string HASH   = __hyprland_api_get_hash();
+    const std::string CLIENT = __hyprland_api_get_client_hash();
+    if (HASH != CLIENT) {
+        const auto DETAIL = abiMismatchDetail(HASH, CLIENT);
+        const auto WHAT   = DETAIL.empty() ? CLIENT + " (plugin) != " + HASH + " (running)" : DETAIL;
+        HyprlandAPI::addNotification(PHANDLE, "[hyprstatus] ABI mismatch: " + WHAT + ". If the plugin is the older side run `hyprpm update`; if it is newer, Hyprland itself needs rebuilding against that dependency.",
+                                     CHyprColor{1.0, 0.2, 0.2, 1.0}, 12000);
+        throw std::runtime_error("[hyprstatus] version mismatch: " + WHAT);
     }
 
     MainThread::init();
