@@ -5,7 +5,8 @@ hyprpm/`hyprctl plugin load`), not a layer-shell client. First of its kind — e
 existing bar (Waybar included) is an external Wayland client talking to Hyprland
 over IPC.
 
-Target: Hyprland **0.56.0** on `main` (0.55.4 kept working via a `commit_pins`
+Target: Hyprland **0.56.2** on `main` (0.56.x is source-compatible across patch
+releases; 0.55.4 kept working via a `commit_pins`
 entry and `src/util/HyprCompat.hpp` header-presence shims). Plugins are
 ABI-locked to the running compositor; hyprpm rebuilds per version. 0.56 moved
 compositor state into `State::` trackers (monitors, workspaces), fullscreen

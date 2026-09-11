@@ -160,8 +160,9 @@ Open an issue with your `hyprctl version` if a build breaks.
 
 | Hyprland | hyprstatus | status |
 |---|---|---|
-| 0.56.0 | `main` (HEAD) | source-compatible (built against v0.56.0 headers); runtime validation in progress |
-| 0.55.4 | pinned (`commit_pins`) | developed + daily-driven on this |
+| 0.56.2 | `main` (HEAD) | developed + daily-driven on this; CI builds against Arch's 0.56.2 |
+| 0.56.0 / 0.56.1 | `main` (HEAD) | source-compatible (`main` verified against v0.56.0 headers; no API drift within 0.56.x) |
+| 0.55.4 | pinned (`commit_pins`) | previously daily-driven; frozen at the last 0.55.4-verified commit |
 
 CI ([`.github/workflows/build.yml`](.github/workflows/build.yml)) builds against
 the Hyprland headers Arch ships, on every push/PR and weekly, so upstream API
