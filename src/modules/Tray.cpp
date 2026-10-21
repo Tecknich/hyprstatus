@@ -229,11 +229,22 @@ namespace {
     // descending (still consuming the wire data) rather than recurse (fix 4).
     constexpr int MAX_MENU_DEPTH = 16;
 
-    // parse one (ia{sv}av) node; recursion covers the whole tree from GetLayout
-    // with depth -1. Returns false only if the struct itself could not be read;
-    // partial property/child failures degrade gracefully (never throw/crash).
+    // parse one menu node; recursion covers the whole tree from GetLayout with
+    // depth -1. The spec encodes a node as (ia{sv}av) with each child VARIANT
+    // wrapping another such node — but hand-rolled services (Proton VPN's
+    // python-dbus tray) emit CONCRETELY TYPED children instead: the node struct
+    // arrives as (ia{sv}a(ia{sv}av)) and its children array holds bare structs,
+    // not variants. Peek the actual signatures and accept both encodings.
+    // Returns false only if the struct itself could not be read; partial
+    // property/child failures degrade gracefully (never throw/crash).
     bool parseMenuNode(sd_bus_message* m, SMenuEntry& out, int depth = 0) {
-        if (sd_bus_message_enter_container(m, SD_BUS_TYPE_STRUCT, "ia{sv}av") <= 0)
+        char        ntype    = 0;
+        const char* ncontents = nullptr;
+        // node struct = "ia{sv}" + ONE trailing children array ("av" or "a(...)")
+        if (sd_bus_message_peek_type(m, &ntype, &ncontents) <= 0 || ntype != SD_BUS_TYPE_STRUCT || !ncontents || std::strncmp(ncontents, "ia{sv}a", 7) != 0)
+            return false;
+        const std::string CHILDARR = ncontents + 6; // children array signature
+        if (sd_bus_message_enter_container(m, SD_BUS_TYPE_STRUCT, ncontents) <= 0)
             return false;
 
         sd_bus_message_read(m, "i", &out.id); // id (default 0 on failure)
@@ -275,15 +286,33 @@ namespace {
 
         if (depth >= MAX_MENU_DEPTH) {
             // at the cap: consume the children array without descending
-            sd_bus_message_skip(m, "av");
-        } else if (sd_bus_message_enter_container(m, SD_BUS_TYPE_ARRAY, "v") > 0) {
-            while (sd_bus_message_enter_container(m, SD_BUS_TYPE_VARIANT, "(ia{sv}av)") > 0) {
+            sd_bus_message_skip(m, CHILDARR.c_str());
+        } else if (sd_bus_message_enter_container(m, SD_BUS_TYPE_ARRAY, CHILDARR.c_str() + 1) > 0) {
+            for (;;) {
+                char        et = 0;
+                const char* ec = nullptr;
+                if (sd_bus_message_peek_type(m, &et, &ec) <= 0)
+                    break; // end of array (or error): stop descending
                 SMenuEntry child;
-                if (parseMenuNode(m, child, depth + 1))
-                    out.children.emplace_back(std::move(child));
-                sd_bus_message_exit_container(m); // variant
+                if (et == SD_BUS_TYPE_VARIANT) { // spec encoding: v wrapping a node struct
+                    if (sd_bus_message_enter_container(m, SD_BUS_TYPE_VARIANT, ec) <= 0)
+                        break;
+                    if (parseMenuNode(m, child, depth + 1))
+                        out.children.emplace_back(std::move(child));
+                    else
+                        sd_bus_message_skip(m, ec); // consume the unparseable payload
+                    sd_bus_message_exit_container(m); // variant
+                } else if (et == SD_BUS_TYPE_STRUCT) { // typed encoding: bare node struct
+                    if (parseMenuNode(m, child, depth + 1))
+                        out.children.emplace_back(std::move(child));
+                    else if (sd_bus_message_skip(m, nullptr) < 0)
+                        break; // cannot consume the element either: bail on this array
+                } else {
+                    if (sd_bus_message_skip(m, nullptr) < 0) // foreign element type
+                        break;
+                }
             }
-            sd_bus_message_exit_container(m); // av
+            sd_bus_message_exit_container(m); // children array
         }
 
         sd_bus_message_exit_container(m); // struct
