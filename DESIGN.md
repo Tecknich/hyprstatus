@@ -141,7 +141,9 @@ hyprstatus-set = clock, format, %a, %b %d   %I:%M %p
 ```
 
 Keyword state is cleared on `config.preReload` and modules are rebuilt on
-`config.reloaded`. On the Lua config backend the same two operations are exposed
+`config.reloaded`. The tray hands its StatusNotifierItem registry across that
+rebuild, so apps that register only once at startup (Proton VPN) keep their icon
+through a reload. On the Lua config backend the same two operations are exposed
 as `hl.plugin.hyprstatus.module{...}` / `hl.plugin.hyprstatus.set{...}`.
 
 Waybar-compatible module option names (`format`, `interval`, `on-click`,

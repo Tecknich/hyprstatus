@@ -15,6 +15,7 @@
 #include <map>
 #include <set>
 #include <string>
+#include <utility>
 #include <vector>
 
 #define WLR_USE_UNSTABLE
@@ -91,6 +92,7 @@ namespace {
         std::vector<STrayPixmap> pixmaps;
 
         bool         pendingGetAll = false;
+        bool         carried       = false; // adopted across a reload (g_handoff): dropped if its first GetAll fails
         sd_bus_slot* slotSignals      = nullptr; // all org.kde.StatusNotifierItem signals from this item
         sd_bus_slot* slotOwnerChanged = nullptr; // NameOwnerChanged arg0=busName
         sd_bus_slot* slotGetAll       = nullptr; // in-flight Properties.GetAll
@@ -98,6 +100,14 @@ namespace {
         // px -> texture; an entry with nullptr = lookup attempted and failed
         std::map<int, SP<Render::ITexture>> texByPx;
     };
+
+    // Registry hand-off across CBarManager::rebuild(). Every config reload destroys
+    // the tray module, which releases org.kde.StatusNotifierWatcher and forgets its
+    // items; the successor re-claims the name in the same rebuild. Apps that watch
+    // the watcher re-register, but some register exactly once at startup (Proton
+    // VPN) and would vanish until restarted. The dying watcher parks its
+    // (busName, objectPath) pairs here and the next init() re-adopts them.
+    std::vector<std::pair<std::string, std::string>> g_handoff;
 
     // service registry strings come in two forms: "busname" (path defaults to
     // /StatusNotifierItem) or "busname/obj/path"
@@ -487,6 +497,11 @@ namespace {
             m_slotBtRemoved = sd_bus_slot_unref(m_slotBtRemoved);
             m_slotBtObjects = sd_bus_slot_unref(m_slotBtObjects);
             m_popupOpen     = false;
+            if (m_isWatcher) { // as a client, the external watcher still holds the registry
+                g_handoff.clear();
+                for (const auto& item : m_items)
+                    g_handoff.emplace_back(item->busName, item->objectPath);
+            }
             m_items.clear();
             dropClientSlots();
             if (m_slotVtable) {
@@ -514,8 +529,16 @@ namespace {
             if (!bus)
                 return; // no bus: stay hidden, own no ref
             m_bus = sd_bus_ref(bus); // owned ref, released last in the dtor
-            if (!tryBecomeWatcher())
+            const bool WATCHER = tryBecomeWatcher();
+            if (!WATCHER)
                 enterClientMode();
+
+            // re-adopt the predecessor's registry (see g_handoff). In client mode the
+            // external watcher's RegisteredStatusNotifierItems already covers it.
+            const auto HANDOFF = std::exchange(g_handoff, {});
+            if (WATCHER)
+                for (const auto& [BUS, PATH] : HANDOFF)
+                    addItem(BUS, PATH, true /*carried*/);
 
             // Self-heal: when the session-bus connection drops and DBus reopens
             // it, the old bus object + every slot we added on it are dead. Re-
@@ -795,7 +818,7 @@ namespace {
             sd_bus_add_match(m_bus, &item->slotOwnerChanged, MATCH.c_str(), onItemOwnerChanged, item);
         }
 
-        void addItem(const std::string& busName, const std::string& path) {
+        void addItem(const std::string& busName, const std::string& path, bool carried = false) {
             // fix 3: a malformed bus name could break out of the match-rule
             // arg0='...' clause; drop it before it reaches any match string.
             if (!isValidBusName(busName))
@@ -820,6 +843,7 @@ namespace {
             item->busName    = busName;
             item->objectPath = path;
             item->service    = SERVICE;
+            item->carried    = carried;
 
             armItemMatches(item.get());
 
@@ -1670,8 +1694,18 @@ namespace {
             sd_bus_slot_unref(item->slotGetAll);
             item->slotGetAll = nullptr;
         }
-        if (!sd_bus_message_is_method_error(m, nullptr))
+        if (sd_bus_message_is_method_error(m, nullptr)) {
+            // a carried item whose owner died or unexported it during the reload
+            // gap: drop it rather than keep a blank slot. Safe mid-dispatch, the
+            // slot was released above and sd-bus holds its own ref.
+            if (item->carried) {
+                self->removeItem(item);
+                return 0;
+            }
+        } else {
+            item->carried = false; // confirmed live; a normal item from here on
             self->applyProps(item, m);
+        }
         if (item->pendingGetAll) {
             item->pendingGetAll = false;
             self->requestGetAll(item);
