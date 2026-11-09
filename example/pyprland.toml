@@ -1,4 +1,4 @@
-# Pyprland scratchpads that pair with example/hyprstatus.conf.
+# Pyprland scratchpads that pair with example/hyprstatus.lua.
 # Read from ~/.config/pypr/config.toml.
 #
 # hyprstatus click actions run arbitrary commands; pyprland's scratchpads are
@@ -6,7 +6,8 @@
 # floating mixer out from under the bar instead of launching a normal window.
 # Install: https://github.com/hyprland-community/pyprland
 #   (pacman -S pyprland | pipx install pyprland)
-# Start it from hyprland.conf:  exec-once = pypr
+# Start it from your Hyprland Lua autostart:
+#   hl.on("hyprland.start", function() hl.exec_cmd("pypr") end)
 #
 # `position` is "x y" as a percentage of the monitor; with a top bar,
 # animation = "fromTop" + a small y drops the pad right below the bar.

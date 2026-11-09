@@ -30,7 +30,7 @@ class CBarManager {
     void clearReservedAll();
 
     // render hook (Event::bus render.stage)
-    void onRenderStage(eRenderStage stage);
+    void onRenderStage(const Event::SRenderStageEvent& ev);
 
     // input hooks
     void onMouseButton(const IPointer::SButtonEvent& e, Event::SCallbackInfo& info);

@@ -2,31 +2,35 @@
 #include <map>
 #include <string>
 
-// Per-module options accumulated from repeatable config keywords:
+// Per-module options, set from the Hyprland Lua config (0.57 has no other
+// config provider):
 //
-//   hyprstatus-module = nowplaying                 # declare a custom module
-//   hyprstatus-set = nowplaying, interval, 2
-//   hyprstatus-set = clock, format, %a, %b %d   %I:%M %p
+//   hl.plugin.hyprstatus.module("nowplaying")              -- declare a custom module
+//   hl.plugin.hyprstatus.set("nowplaying", "interval", "2")
+//   hl.plugin.hyprstatus.set("clock", "format", "%a, %b %d   %I:%M %p")
 //
-// hyprstatus-set splits ONLY the first two commas; the remainder is the raw
-// value (commas and leading/trailing spaces preserved except around the first
-// two separators). Option keys follow Waybar naming (format, interval,
+// Arguments are plain strings, so commas, quotes and real newlines in a value
+// need no escaping. Option keys follow Waybar naming (format, interval,
 // on-click, format-icons.<alt>, states.warning, color.<class>, ...).
-//
-// On the Lua config backend the equivalents are
-//   hl.plugin.hyprstatus.module("nowplaying")
-//   hl.plugin.hyprstatus.set("clock", "format", "%a %b %d")
 struct SModuleConfig {
     std::string                        name;
     std::map<std::string, std::string> opts;
 };
 
 namespace ModuleConfigStore {
-    // register hyprstatus-module / hyprstatus-set on the active config backend.
-    // MUST be called from PLUGIN_INIT only.
+    // register hl.plugin.hyprstatus.module / .set. PLUGIN_INIT only.
     void registerKeywords();
 
-    void clear(); // config.preReload
+    // Reload bracketing. A Lua syntax error aborts the reload before any of the
+    // config runs, yet Hyprland keeps its old state and still emits
+    // config.reloaded -- clearing on preReload alone would then rebuild the bar
+    // with no per-module options at all. So: beginReload() parks the current
+    // options (config.preReload); module()/set() call noteLuaCall(); and
+    // endReload(verified) restores the parked set when verification failed AND
+    // no module()/set() ran this time (config.reloaded, before the rebuild).
+    void beginReload();
+    void noteLuaCall();
+    void endReload(bool verificationPassed);
 
     const std::map<std::string, SModuleConfig>& all();
     SModuleConfig                               get(const std::string& name); // empty cfg if unknown

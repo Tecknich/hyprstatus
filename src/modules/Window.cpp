@@ -1,14 +1,9 @@
 #define WLR_USE_UNSTABLE
-#include <hyprland/src/desktop/Workspace.hpp>
+#include <hyprland/src/workspace/HLWorkspace.hpp>
 #include <hyprland/src/desktop/state/FocusState.hpp>
-#include <hyprland/src/desktop/view/Window.hpp>
+#include <hyprland/src/desktop/view/window/Window.hpp>
 #include <hyprland/src/event/EventBus.hpp>
-// 0.56 moved CMonitor: helpers/Monitor.hpp -> output/Monitor.hpp
-#if __has_include(<hyprland/src/output/Monitor.hpp>)
 #include <hyprland/src/output/Monitor.hpp>
-#else
-#include <hyprland/src/helpers/Monitor.hpp>
-#endif
 
 #include <algorithm>
 #include <string>
@@ -26,6 +21,8 @@ class CWindowModule : public IModule {
     void init() override {
         auto& EV = Event::bus()->m_events;
         m_listeners.push_back(EV.window.title.listen([this] { requestRedraw(); }));
+        // 0.57 reports app-id changes separately from title changes; {class} needs both
+        m_listeners.push_back(EV.window.class_.listen([this] { requestRedraw(); }));
         // window.active payload PHLWINDOW may be NULL (focus loss); we only
         // need "focus changed" so the args are ignored entirely
         m_listeners.push_back(EV.window.active.listen([this] { requestRedraw(); }));
@@ -62,7 +59,7 @@ class CWindowModule : public IModule {
         const auto W = windowFor(mon);
         if (!Desktop::View::validMapped(W))
             return "";
-        const auto TEXT = Fmt::replaceTokens(opt("format", "{title}"), {{"title", W->m_title}, {"class", W->m_class}});
+        const auto TEXT = Fmt::replaceTokens(opt("format", "{title}"), {{"title", W->metadata().title()}, {"class", W->metadata().appID()}});
         return Fmt::truncate(TEXT, (size_t)std::max((int64_t)0, optInt("max-length", 80)));
     }
 

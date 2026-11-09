@@ -3,6 +3,12 @@
 
 #include <hyprland/src/config/ConfigManager.hpp>
 #include <hyprland/src/event/EventBus.hpp>
+#include <hyprland/src/ipc/s1/S1.hpp>
+
+extern "C" {
+#include <lauxlib.h>
+#include <lua.h>
+}
 
 #include "config/ModuleConfig.hpp"
 #include "core/BarManager.hpp"
@@ -16,7 +22,7 @@
 #include <algorithm>
 #include <string>
 
-static SP<SHyprCtlCommand> g_ctlCommand;
+static SP<IPC::Socket1::SCommand> g_ctlCommand;
 
 APICALL EXPORT std::string PLUGIN_API_VERSION() {
     return HYPRLAND_API_VERSION;
@@ -105,6 +111,20 @@ static std::string abiMismatchDetail(const std::string& server, const std::strin
     return out;
 }
 
+// hl.plugin.hyprstatus.toggle() / .refresh([module]) — see PLUGIN_INIT
+static int luaToggle(lua_State*) {
+    if (g_barManager)
+        g_barManager->toggleVisible();
+    return 0;
+}
+
+static int luaRefresh(lua_State* L) {
+    const char* NAME = luaL_optstring(L, 1, "");
+    if (g_barManager)
+        g_barManager->refreshModule(NAME ? NAME : "");
+    return 0;
+}
+
 APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
     PHANDLE = handle;
 
@@ -127,21 +147,22 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
     g_barManager = makeUnique<CBarManager>();
     g_barManager->init();
 
-    HyprlandAPI::addDispatcherV2(PHANDLE, "hyprstatus:toggle", [](std::string) -> SDispatchResult {
-        if (g_barManager)
-            g_barManager->toggleVisible();
-        return {};
-    });
-    HyprlandAPI::addDispatcherV2(PHANDLE, "hyprstatus:refresh", [](std::string arg) -> SDispatchResult {
-        if (g_barManager)
-            g_barManager->refreshModule(arg);
-        return {};
-    });
+    // 0.57 removed plugin dispatchers (HyprlandAPI::addDispatcherV2 is now a stub
+    // that returns false) and `hyprctl dispatch` evaluates Lua, so the old
+    // hyprstatus:toggle / hyprstatus:refresh dispatchers would be dead. Expose the
+    // same controls as Lua functions:
+    //   hl.bind("SUPER + B", function() hl.plugin.hyprstatus.toggle() end)
+    //   hyprctl eval 'hl.plugin.hyprstatus.refresh("updates")'   -- no arg = all
+    HyprlandAPI::addLuaFunction(PHANDLE, "hyprstatus", "toggle", ::luaToggle);
+    HyprlandAPI::addLuaFunction(PHANDLE, "hyprstatus", "refresh", ::luaRefresh);
 
+    // `hyprctl hyprstatus` -> module state as JSON (always JSON, so -j is moot)
     g_ctlCommand = HyprlandAPI::registerHyprCtlCommand(
-        PHANDLE, SHyprCtlCommand{.name = "hyprstatus", .exact = true, .fn = [](eHyprCtlOutputFormat fmt, std::string) -> std::string {
-                                     return g_barManager ? g_barManager->statusJson() : "{}";
-                                 }});
+        PHANDLE, IPC::Socket1::SCommand{.name    = "hyprstatus",
+                                        .match   = IPC::Socket1::COMMAND_MATCH_EXACT,
+                                        .handler = [](const IPC::Socket1::SRequest&) -> IPC::Socket1::SResponse {
+                                            return g_barManager ? g_barManager->statusJson() : std::string{"{}"};
+                                        }});
 
     HyprlandAPI::reloadConfig();
 

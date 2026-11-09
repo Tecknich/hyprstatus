@@ -5,13 +5,16 @@ hyprpm/`hyprctl plugin load`), not a layer-shell client. First of its kind — e
 existing bar (Waybar included) is an external Wayland client talking to Hyprland
 over IPC.
 
-Target: Hyprland **0.56.2** on `main` (0.56.x is source-compatible across patch
-releases; 0.55.4 kept working via a `commit_pins`
-entry and `src/util/HyprCompat.hpp` header-presence shims). Plugins are
-ABI-locked to the running compositor; hyprpm rebuilds per version. 0.56 moved
-compositor state into `State::` trackers (monitors, workspaces), fullscreen
-into `Fullscreen::controller()`, and hit-testing into `Desktop::viewState()` —
-all access goes through `Compat::` wrappers.
+Target: Hyprland **0.57.2** on `main`; 0.56.x and 0.55.4 are served by
+`commit_pins` at the last commit verified on each. Plugins are ABI-locked to the
+running compositor; hyprpm rebuilds per version. 0.56 moved compositor state into
+`State::` trackers (monitors, workspaces), fullscreen into
+`Fullscreen::controller()`, and hit-testing into `Desktop::viewState()`. 0.57 then
+threaded a `Render::CRenderContext` through all rendering, replaced `CWorkspace`
+with `Workspace::CHLWorkspace` (variant IDs), moved keybinds into `Keybinds::`,
+removed plugin dispatchers, and dropped the hyprlang config provider. Compositor
+access still goes through `src/util/HyprCompat.hpp` (`Compat::`), which now
+`#error`s on pre-0.57 headers rather than carrying dead branches.
 
 ## Why in-compositor beats Waybar
 
@@ -19,16 +22,18 @@ all access goes through `Compat::` wrappers.
   submaps are read directly from compositor memory and updated by typed
   `Event::bus()` signals the same frame they change. No socket2 round-trips, no
   polling `hyprctl`, no stale state after reconnects.
-- **One config, one reload.** Configured in `hyprland.conf` under
-  `plugin:hyprstatus:*` + `hyprstatus-*` keywords; `hyprctl reload` re-themes the
-  bar atomically with the rest of the desktop (halcyon can template one file).
+- **One config, one reload.** Configured in the Hyprland Lua config
+  (`plugin.hyprstatus.*` values + `hl.plugin.hyprstatus.set`); `hyprctl reload`
+  re-themes the bar atomically with the rest of the desktop (halcyon can template
+  one file).
 - **Compositor-native rendering.** Drawn in Hyprland's own GL pass with its
   damage tracking: when nothing on the bar changes, the bar costs nothing. Real
   blur behind the bar via Hyprland's blur, exact monitor scale handling, no GTK.
 - **First-class input.** Clicks/scrolls are consumed before any window sees
   them; workspace switching calls the compositor's own dispatchers.
-- **Dispatchers + hyprctl.** `hyprstatus:toggle`, `hyprstatus:refresh` are
-  bindable like any dispatcher; `hyprctl hyprstatus` dumps module state as JSON.
+- **Lua controls + hyprctl.** `hl.plugin.hyprstatus.toggle()` and
+  `hl.plugin.hyprstatus.refresh([module])` bind like any Lua function (0.57 has no
+  plugin dispatchers); `hyprctl hyprstatus` dumps module state as JSON.
 
 ## Architecture
 
@@ -37,23 +42,29 @@ exceptions (PulseAudio's threaded mainloop, nothing else) marshal back via an
 eventfd registered on the compositor's wayland event loop.
 
 ```
-main.cpp            PLUGIN_INIT/EXIT, config registration, dispatchers, hyprctl cmd
+main.cpp            PLUGIN_INIT/EXIT, config registration, Lua controls, hyprctl cmd
 core/BarManager     module lifecycle, per-monitor CBar set, event listeners,
                     reserved-area management, input routing, render-stage hook
 core/Bar            per-monitor layout (logical coords), hit regions, draw()
 render/BarPassElement   IPassElement (EK_CUSTOM) queued at RENDER_POST_WINDOWS
 render/TooltipPassElement   queued at RENDER_LAST_MOMENT on hovered monitor
 render/TextCache    (text,font,px,weight,color,maxW) -> SP<ITexture>, LRU
-config/ModuleConfig hyprstatus-module / hyprstatus-set keyword parsing (+ Lua)
+config/ModuleConfig hl.plugin.hyprstatus.module / .set (Lua; the only config path on 0.57)
 services/MainThread eventfd waker: post(fn) from any thread -> runs on main
 services/Exec       CProcess runAsync + wl_event_loop_add_fd (poll & streaming)
 services/DBus       sd-bus session+system, fds pumped on the wl event loop
 modules/*           one file per module, all implement IModule
 ```
 
-### Rendering (the 0.55 pass system)
+### Rendering (the pass system, 0.57 render contexts)
 
-All drawing in 0.55 is deferred `IPassElement`s executed inside `endRender()`.
+All drawing is deferred `IPassElement`s executed inside `endRender()`. Since 0.57
+there is no global render pass: each frame has a `Render::CRenderContext` carrying
+its own pass and render data (`ctx.m_data.pMonitor`, `ctx.m_data.damage`), every
+pass-element hook and every `CHyprOpenGLImpl` draw call takes that context first,
+and elements are queued with `IHyprRenderer::addPassElement(ctx, ...)`. The
+`render.stage` event now delivers `{stage, monitor, context}`; `PRE`/`POST` carry
+no context and are ignored.
 The plugin listens to `Event::bus()->m_events.render.stage`; at
 `RENDER_POST_WINDOWS` it queues one `CBarPassElement` for the monitor being
 rendered (`g_pHyprRenderer->m_renderData.pMonitor`). Insertion order = z-order:
@@ -128,23 +139,26 @@ Update sources per module type:
 
 ### Configuration
 
-Global options are typed `addConfigValueV2` values (`plugin:hyprstatus:height`,
-`...:col.accent`, `...:modules_left`, …) — introspectable, validated, live on
-`hyprctl reload`. Per-module options use repeatable keywords (the hyprbars
-mechanism), value-as-rest so commas in formats survive:
+Global options are typed `addConfigValueV2` values (`plugin.hyprstatus.height`,
+`...col.accent`, `...modules_left`, …) — introspectable, validated, live on
+`hyprctl reload`. Per-module options are two Lua functions taking positional
+strings, so commas and newlines in formats need no escaping:
 
+```lua
+hl.plugin.hyprstatus.module("nowplaying")   -- declare a custom module
+hl.plugin.hyprstatus.set("nowplaying", "exec", "~/.config/halcyon/scripts/halcyon-nowplaying.sh")
+hl.plugin.hyprstatus.set("nowplaying", "interval", "2")
+hl.plugin.hyprstatus.set("clock", "format", "%a, %b %d   %I:%M %p")
 ```
-hyprstatus-module = nowplaying                      # declare a custom module
-hyprstatus-set = nowplaying, exec, ~/.config/halcyon/scripts/halcyon-nowplaying.sh
-hyprstatus-set = nowplaying, interval, 2
-hyprstatus-set = clock, format, %a, %b %d   %I:%M %p
-```
+
+Controls are Lua functions too, because 0.57 removed plugin dispatchers
+(`addDispatcherV2` is a stub returning false): `hl.plugin.hyprstatus.toggle()` and
+`hl.plugin.hyprstatus.refresh([module])`.
 
 Keyword state is cleared on `config.preReload` and modules are rebuilt on
 `config.reloaded`. The tray hands its StatusNotifierItem registry across that
 rebuild, so apps that register only once at startup (Proton VPN) keep their icon
-through a reload. On the Lua config backend the same two operations are exposed
-as `hl.plugin.hyprstatus.module{...}` / `hl.plugin.hyprstatus.set{...}`.
+through a reload.
 
 Waybar-compatible module option names (`format`, `interval`, `on-click`,
 `format-icons.<alt>`, `states.warning`, …) so migration is mechanical.

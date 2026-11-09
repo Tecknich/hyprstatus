@@ -4,7 +4,8 @@
 #include <chrono>
 
 #include <hyprland/src/Compositor.hpp>
-#include <hyprland/src/desktop/view/Window.hpp>
+#include <hyprland/src/config/ConfigManager.hpp>
+#include <hyprland/src/desktop/view/window/Window.hpp>
 #include <hyprland/src/desktop/reserved/ReservedArea.hpp>
 #include <hyprland/src/desktop/state/FocusState.hpp>
 // 0.56 moved CMonitor: helpers/Monitor.hpp -> output/Monitor.hpp
@@ -80,7 +81,7 @@ static void damageTooltipBand(const CBar* bar) {
 void CBarManager::init() {
     auto& events = Event::bus()->m_events;
 
-    m_lRenderStage = events.render.stage.listen([this](eRenderStage stage) { onRenderStage(stage); });
+    m_lRenderStage = events.render.stage.listen([this](const Event::SRenderStageEvent& ev) { onRenderStage(ev); });
 
     m_lMonAdded = events.monitor.added.listen([this](PHLMONITOR mon) {
         if (!m_built || !mon)
@@ -116,9 +117,12 @@ void CBarManager::init() {
             g_pHyprRenderer->damageMonitor(MON);
     });
 
-    m_lCfgPreReload = events.config.preReload.listen([] { ModuleConfigStore::clear(); });
+    m_lCfgPreReload = events.config.preReload.listen([] { ModuleConfigStore::beginReload(); });
 
     m_lCfgReloaded = events.config.reloaded.listen([this] {
+        // a reload aborted by a Lua syntax error keeps Hyprland's old config, so
+        // keep the old module options too (see ModuleConfigStore::beginReload)
+        ModuleConfigStore::endReload(Config::mgr()->configVerifPassed());
         g_rebuildLater = g_pEventLoopManager->doLaterLock([this] { rebuild(); });
     });
 
@@ -196,9 +200,16 @@ void CBarManager::shutdown() {
     m_bars.clear();
     clearReservedAll();
 
-    g_pHyprRenderer->m_renderPass.removeAllOfType("CHyprstatusBarPassElement");
-    g_pHyprRenderer->m_renderPass.removeAllOfType("CHyprstatusTooltipPassElement");
-    g_pHyprRenderer->m_renderPass.removeAllOfType("CHyprstatusPopupPassElement");
+    // 0.57 has no persistent render pass: elements live in the per-frame
+    // CRenderContext and are consumed by endRender(), and PLUGIN_EXIT runs from
+    // the event loop, never mid-frame. Purge defensively anyway in case a frame
+    // is open, since a surviving element would call into unmapped .so code.
+    if (auto& ctx = g_pHyprRenderer->context(); ctx.active()) {
+        auto& pass = Render::IHyprRenderer::currentPass(ctx);
+        pass.removeAllOfType("CHyprstatusBarPassElement");
+        pass.removeAllOfType("CHyprstatusTooltipPassElement");
+        pass.removeAllOfType("CHyprstatusPopupPassElement");
+    }
 
     if (g_tooltipTimer) {
         g_pEventLoopManager->removeTimer(g_tooltipTimer);
@@ -408,12 +419,18 @@ bool CBarManager::overviewHidden(const PHLMONITOR& mon) const {
 #endif
 }
 
-void CBarManager::onRenderStage(eRenderStage stage) {
+void CBarManager::onRenderStage(const Event::SRenderStageEvent& ev) {
+    // PRE / POST carry no live context; every stage we draw at does.
+    if (!ev.context)
+        return;
+    auto&      ctx   = ev.context->get();
+    const auto stage = ev.stage;
+
     if (stage == RENDER_POST_WINDOWS) {
         if (!visible())
             return;
 
-        const auto PMONITOR = g_pHyprRenderer->m_renderData.pMonitor.lock();
+        const auto PMONITOR = ev.monitor;
         if (!PMONITOR || !barForMonitor(PMONITOR))
             return;
 
@@ -428,7 +445,7 @@ void CBarManager::onRenderStage(eRenderStage stage) {
         if (overviewHidden(PMONITOR))
             return;
 
-        g_pHyprRenderer->m_renderPass.add(makeUnique<CBarPassElement>(PMONITOR));
+        Render::IHyprRenderer::addPassElement(ctx, makeUnique<CBarPassElement>(PMONITOR));
         return;
     }
 
@@ -443,7 +460,7 @@ void CBarManager::onRenderStage(eRenderStage stage) {
     if (g_pSessionLockManager && g_pSessionLockManager->isSessionLocked())
         return;
 
-    const auto PMONITOR = g_pHyprRenderer->m_renderData.pMonitor.lock();
+    const auto PMONITOR = ev.monitor;
     if (!PMONITOR)
         return;
 
@@ -458,9 +475,9 @@ void CBarManager::onRenderStage(eRenderStage stage) {
     // tooltips so they can't paint over/under the menu.
     if (auto* const POPMOD = moduleWithPopup()) {
         if (POPMOD->popupMonitor().lock() == PMONITOR) {
-            g_pHyprRenderer->m_renderPass.add(makeUnique<CPopupPassElement>(PMONITOR));
+            Render::IHyprRenderer::addPassElement(ctx, makeUnique<CPopupPassElement>(PMONITOR));
             // this stage draws after the cursor — put the pointer back on top
-            Compat::raiseSoftwareCursor(PMONITOR);
+            Compat::raiseSoftwareCursor(ctx, PMONITOR);
         }
         return;
     }
@@ -480,10 +497,10 @@ void CBarManager::onRenderStage(eRenderStage stage) {
     if (NOW - BAR->m_hoverStartMs < (uint64_t)g_cfg.tooltipDelayMs->value())
         return;
 
-    g_pHyprRenderer->m_renderPass.add(makeUnique<CTooltipPassElement>(PMONITOR));
+    Render::IHyprRenderer::addPassElement(ctx, makeUnique<CTooltipPassElement>(PMONITOR));
     // a tall tooltip reaches under the pointer (the hover panels especially), and
     // this stage draws after the cursor — put the pointer back on top
-    Compat::raiseSoftwareCursor(PMONITOR);
+    Compat::raiseSoftwareCursor(ctx, PMONITOR);
 }
 
 // bar under the cursor, or nullptr. Coordinates are global logical.
