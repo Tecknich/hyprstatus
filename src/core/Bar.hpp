@@ -6,6 +6,10 @@
 
 #include "../modules/Module.hpp"
 
+namespace Render {
+    class CRenderContext;
+}
+
 // Region of the bar owned by one module segment; coordinates are
 // monitor-local LOGICAL pixels (pre-scale).
 struct SHitRegion {
@@ -29,11 +33,11 @@ class CBar {
 
     // Full render for this monitor. ONLY call from inside a pass element's
     // draw() (GL context current). Rebuilds m_hitRegions as a side effect.
-    void draw();
+    void draw(Render::CRenderContext& ctx);
 
     // Render the tooltip for the currently hovered region, if due.
     // Called from the tooltip pass element (RENDER_LAST_MOMENT).
-    void drawTooltip();
+    void drawTooltip(Render::CRenderContext& ctx);
 
     // input helpers (global logical coords)
     bool hitTest(const Vector2D& global, int* regionIdx) const;

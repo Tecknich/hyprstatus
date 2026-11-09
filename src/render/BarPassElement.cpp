@@ -1,29 +1,25 @@
 #define WLR_USE_UNSTABLE
 #include "BarPassElement.hpp"
 
-// 0.56 moved CMonitor: helpers/Monitor.hpp -> output/Monitor.hpp
-#if __has_include(<hyprland/src/output/Monitor.hpp>)
 #include <hyprland/src/output/Monitor.hpp>
-#else
-#include <hyprland/src/helpers/Monitor.hpp>
-#endif
+#include <hyprland/src/render/Context.hpp>
 
 #include "../core/Bar.hpp"
 #include "../core/BarManager.hpp"
 #include "../globals.hpp"
 
-std::vector<UP<IPassElement>> CBarPassElement::draw() {
+std::vector<UP<IPassElement>> CBarPassElement::draw(Render::CRenderContext& ctx) {
     const auto MON = m_monitor.lock();
     if (!MON || !g_barManager)
         return {};
 
     if (const auto BAR = g_barManager->barForMonitor(MON))
-        BAR->draw();
+        BAR->draw(ctx);
 
     return {};
 }
 
-std::optional<CBox> CBarPassElement::boundingBox() {
+std::optional<CBox> CBarPassElement::boundingBox(Render::CRenderContext&) {
     const auto MON = m_monitor.lock();
     if (!MON || !g_barManager)
         return std::nullopt;
@@ -43,25 +39,25 @@ std::optional<CBox> CBarPassElement::boundingBox() {
     return BOX;
 }
 
-bool CBarPassElement::needsLiveBlur() {
+bool CBarPassElement::needsLiveBlur(Render::CRenderContext& ctx) {
     // Gate on a valid, non-degenerate box: boundingBox() returns nullopt for a
     // degenerate bar, and live blur with a null/negative bounding box RASSERTs
     // (crashes the compositor).
-    return g_cfg.blur && g_cfg.blur->value() && boundingBox().has_value();
+    return g_cfg.blur && g_cfg.blur->value() && boundingBox(ctx).has_value();
 }
 
-std::vector<UP<IPassElement>> CTooltipPassElement::draw() {
+std::vector<UP<IPassElement>> CTooltipPassElement::draw(Render::CRenderContext& ctx) {
     const auto MON = m_monitor.lock();
     if (!MON || !g_barManager)
         return {};
 
     if (const auto BAR = g_barManager->barForMonitor(MON))
-        BAR->drawTooltip();
+        BAR->drawTooltip(ctx);
 
     return {};
 }
 
-std::vector<UP<IPassElement>> CPopupPassElement::draw() {
+std::vector<UP<IPassElement>> CPopupPassElement::draw(Render::CRenderContext& ctx) {
     const auto MON = m_monitor.lock();
     if (!MON || !g_barManager)
         return {};
@@ -69,7 +65,7 @@ std::vector<UP<IPassElement>> CPopupPassElement::draw() {
     // draw the popup owned by whichever module has one open on this monitor
     for (auto& mod : g_barManager->m_modules) {
         if (mod && mod->popupOpen() && mod->popupMonitor().lock() == MON) {
-            mod->drawPopup(MON);
+            mod->drawPopup(ctx, MON);
             break;
         }
     }

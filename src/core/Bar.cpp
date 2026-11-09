@@ -128,7 +128,7 @@ struct SLaidSegment {
     bool                 passive = false;
 };
 
-void CBar::draw() {
+void CBar::draw(Render::CRenderContext& ctx) {
     m_hitRegions.clear();
 
     const auto MON = m_monitor.lock();
@@ -143,11 +143,11 @@ void CBar::draw() {
 
     const int ROUNDING = (int)std::round(g_cfg.rounding->value() * SCALE);
 
-    g_pHyprOpenGL->renderRect(PIXBAR, cfgColor(g_cfg.colBackground),
+    g_pHyprOpenGL->renderRect(ctx, PIXBAR, cfgColor(g_cfg.colBackground),
                               {.round = ROUNDING, .roundingPower = 2.F, .blur = g_cfg.blur->value(), .blurA = 1.F});
 
     if (const auto BORDER = g_cfg.borderSize->value(); BORDER > 0)
-        g_pHyprOpenGL->renderBorder(PIXBAR, Config::CGradientValueData{cfgColor(g_cfg.colBorder)},
+        g_pHyprOpenGL->renderBorder(ctx, PIXBAR, Config::CGradientValueData{cfgColor(g_cfg.colBorder)},
                                     {.round = ROUNDING, .roundingPower = 2.F, .borderSize = (int)std::round(BORDER * SCALE)});
 
     // ---- layout (logical px; scale only at draw) ----
@@ -241,7 +241,7 @@ void CBar::draw() {
     // Center on the bar middle, but clamp into the gap between the left and
     // right groups so the center never overlaps them (a long now-playing title
     // used to bleed over the right modules). When the gap is too narrow the
-    // center is pinned to the gap's left edge and clipped by the scissor below.
+    // center is pinned to the gap's left edge and clipped to the gap below.
     const double GAPSTART = SPACING + LEFTW + SPACING;
     const double GAPEND   = BARLOCAL.w - SPACING - RIGHTW - SPACING;
     double       centerX  = (BARLOCAL.w - CENTERW) / 2.0;
@@ -276,11 +276,11 @@ void CBar::draw() {
                     if (PILL.w >= 1 && PILL.h >= 1) {
                         if (!BGSTR.empty())
                             if (const auto C = parseColorString(BGSTR); C.has_value())
-                                g_pHyprOpenGL->renderRect(PILL, *C, {.round = BOXROUND, .roundingPower = 2.F});
+                                g_pHyprOpenGL->renderRect(ctx, PILL, *C, {.round = BOXROUND, .roundingPower = 2.F});
 
                         if (!BORDERSTR.empty())
                             if (const auto C = parseColorString(BORDERSTR); C.has_value())
-                                g_pHyprOpenGL->renderBorder(PILL, Config::CGradientValueData{*C},
+                                g_pHyprOpenGL->renderBorder(ctx, PILL, Config::CGradientValueData{*C},
                                                             {.round = BOXROUND, .roundingPower = 2.F, .borderSize = std::max(1, (int)std::round(SCALE))});
                     }
                 }
@@ -300,12 +300,12 @@ void CBar::draw() {
                     const double ICONPX = std::round(ICONSIZE * SCALE);
                     const CBox   BOX    = {PIXX, std::round(PIXBAR.y + (PIXBAR.h - ICONPX) / 2.0), ICONPX, ICONPX};
                     if (BOX.w >= 1 && BOX.h >= 1)
-                        g_pHyprOpenGL->renderTexture(L.seg.icon, BOX, {.a = ALPHA});
+                        g_pHyprOpenGL->renderTexture(ctx, L.seg.icon, BOX, {.a = ALPHA});
                 } else if (L.tex) {
                     // texture is already scale-baked: draw 1:1 in pixel space
                     const CBox BOX = {PIXX, std::round(PIXBAR.y + (PIXBAR.h - L.tex->m_size.y) / 2.0), L.tex->m_size.x, L.tex->m_size.y};
                     if (BOX.w >= 1 && BOX.h >= 1)
-                        g_pHyprOpenGL->renderTexture(L.tex, BOX, {.a = ALPHA});
+                        g_pHyprOpenGL->renderTexture(ctx, L.tex, BOX, {.a = ALPHA});
                 }
             }
         }
@@ -317,18 +317,30 @@ void CBar::draw() {
 
     // clip the center group to the gap so an over-long center title is cut off
     // at the side groups instead of overlapping them.
+    //
+    // Through ctx.m_data.clipBox, NOT scissor(): every CHyprOpenGLImpl draw call
+    // scissors per damage rect itself and disables the scissor on exit, so a
+    // plugin scissor() is overwritten by the first draw (it never clipped, on
+    // 0.56 either). clipBox is in scaled monitor-local pixels, as CLIP is; if
+    // the pass already restricted this element, intersect rather than widen.
     const double CLIPX0 = std::clamp(GAPSTART, 0.0, BARLOCAL.w);
     const double CLIPX1 = std::clamp(GAPEND, 0.0, BARLOCAL.w);
     if (CLIPX1 > CLIPX0) {
-        const CBox CLIP = CBox{BARLOCAL.x + CLIPX0, BARLOCAL.y, CLIPX1 - CLIPX0, BARLOCAL.h}.scale(SCALE).round();
-        g_pHyprOpenGL->scissor(CLIP);
+        CBox       clip  = CBox{BARLOCAL.x + CLIPX0, BARLOCAL.y, CLIPX1 - CLIPX0, BARLOCAL.h}.scale(SCALE).round();
+        const CBox SAVED = ctx.m_data.clipBox;
+        if (!SAVED.empty())
+            clip = clip.intersection(SAVED);
+        // always run drawGroup: it also records the center hit regions, and the
+        // hover mapping relies on left -> center -> right indices lining up. An
+        // empty intersection just leaves the pass's own clip in force.
+        if (!clip.empty())
+            ctx.m_data.clipBox = clip;
         drawGroup(center);
-        g_pHyprOpenGL->scissor(PIXBAR); // restore to the bar box for the right group
+        ctx.m_data.clipBox = SAVED;
     } else
         drawGroup(center); // degenerate gap: draw unclipped so it stays clickable
 
     drawGroup(right);
-    g_pHyprOpenGL->scissor(nullptr);
 
     // A relayout under a stationary cursor (a module widened, segments shifted)
     // moves segments out from under the index onMouseMove recorded, so the stale
@@ -348,7 +360,7 @@ void CBar::draw() {
     }
 }
 
-void CBar::drawTooltip() {
+void CBar::drawTooltip(Render::CRenderContext& ctx) {
     const auto MON = m_monitor.lock();
     if (!MON || !g_barManager)
         return;
@@ -403,13 +415,13 @@ void CBar::drawTooltip() {
 
     const int ROUNDING = (int)std::round(g_cfg.rounding->value() * SCALE);
 
-    g_pHyprOpenGL->renderRect(PIXBOX, cfgColor(g_cfg.colTooltipBg), {.round = ROUNDING, .roundingPower = 2.F});
-    g_pHyprOpenGL->renderBorder(PIXBOX, Config::CGradientValueData{cfgColor(g_cfg.colBorder)},
+    g_pHyprOpenGL->renderRect(ctx, PIXBOX, cfgColor(g_cfg.colTooltipBg), {.round = ROUNDING, .roundingPower = 2.F});
+    g_pHyprOpenGL->renderBorder(ctx, PIXBOX, Config::CGradientValueData{cfgColor(g_cfg.colBorder)},
                                 {.round = ROUNDING, .roundingPower = 2.F, .borderSize = std::max(1, (int)std::round(SCALE))});
 
     const CBox TEXBOX = {PIXBOX.x + std::round(PAD * SCALE), PIXBOX.y + std::round((PIXBOX.h - TEX->m_size.y) / 2.0), TEX->m_size.x, TEX->m_size.y};
     if (TEXBOX.w >= 1 && TEXBOX.h >= 1)
-        g_pHyprOpenGL->renderTexture(TEX, TEXBOX, {.a = 1.F});
+        g_pHyprOpenGL->renderTexture(ctx, TEX, TEXBOX, {.a = 1.F});
 }
 
 bool CBar::hitTest(const Vector2D& global, int* regionIdx) const {

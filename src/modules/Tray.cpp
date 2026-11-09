@@ -722,7 +722,7 @@ namespace {
             return false; // click was not inside the popup
         }
 
-        void drawPopup(PHLMONITOR mon) override;
+        void drawPopup(Render::CRenderContext& ctx, PHLMONITOR mon) override;
 
         // called from the file-local GetLayout reply callback
         void handleMenuLayout(sd_bus_message* m) {
@@ -1772,7 +1772,7 @@ namespace {
 
     // ---- popup rendering (GL current; called from CPopupPassElement::draw) ----
 
-    void CTrayModule::drawPopup(PHLMONITOR mon) {
+    void CTrayModule::drawPopup(Render::CRenderContext& ctx, PHLMONITOR mon) {
         if (!mon || !m_popupOpen || m_popupEntries.empty())
             return;
         m_popupHits.clear();
@@ -1827,8 +1827,8 @@ namespace {
             const CBox PIX = CBox{ox, oy, w, h}.scale(SCALE).round();
             if (PIX.w < 1 || PIX.h < 1)
                 return;
-            g_pHyprOpenGL->renderRect(PIX, BG, {.round = ROUNDING, .roundingPower = 2.F});
-            g_pHyprOpenGL->renderBorder(PIX, Config::CGradientValueData{BORD}, {.round = ROUNDING, .roundingPower = 2.F, .borderSize = std::max(1, (int)std::round(SCALE))});
+            g_pHyprOpenGL->renderRect(ctx, PIX, BG, {.round = ROUNDING, .roundingPower = 2.F});
+            g_pHyprOpenGL->renderBorder(ctx, PIX, Config::CGradientValueData{BORD}, {.round = ROUNDING, .roundingPower = 2.F, .borderSize = std::max(1, (int)std::round(SCALE))});
 
             double ry = oy + PAD_Y;
             for (size_t i = 0; i < entries.size(); ++i) {
@@ -1840,7 +1840,7 @@ namespace {
                 if (E.type == "separator") {
                     const CBox line = CBox{ox + PAD_X, ry + RH / 2.0, w - 2 * PAD_X, 1.0}.scale(SCALE).round();
                     if (line.w >= 1 && line.h >= 1)
-                        g_pHyprOpenGL->renderRect(line, BORD, {});
+                        g_pHyprOpenGL->renderRect(ctx, line, BORD, {});
                     ry += RH;
                     continue;
                 }
@@ -1851,7 +1851,7 @@ namespace {
                 if (HOV) {
                     const CBox hl = CBox{ox + 2, ry, w - 4, RH}.scale(SCALE).round();
                     if (hl.w >= 1 && hl.h >= 1)
-                        g_pHyprOpenGL->renderRect(hl, HL, {.round = std::max(0, ROUNDING / 2), .roundingPower = 2.F});
+                        g_pHyprOpenGL->renderRect(ctx, hl, HL, {.round = std::max(0, ROUNDING / 2), .roundingPower = 2.F});
                 }
 
                 // left gutter: a menu-item icon (icon-name / icon-data) takes
@@ -1864,7 +1864,7 @@ namespace {
                     const double iy = ry + (RH - IS) / 2.0;
                     const CBox   ib = CBox{ix, iy, IS, IS}.scale(SCALE).round();
                     if (ib.w >= 1 && ib.h >= 1)
-                        g_pHyprOpenGL->renderTexture(E.iconTex, ib, {.a = E.enabled ? 1.F : 0.5F});
+                        g_pHyprOpenGL->renderTexture(ctx, E.iconTex, ib, {.a = E.enabled ? 1.F : 0.5F});
                 } else if ((E.toggleType == "checkmark" || E.toggleType == "radio") && E.toggleState == 1) {
                     // toggle state marker in the left gutter
                     const double CS = std::max(4.0, fontLogical * 0.45);
@@ -1873,7 +1873,7 @@ namespace {
                     const CBox   mk = CBox{mx, my, CS, CS}.scale(SCALE).round();
                     const int    mr = E.toggleType == "radio" ? (int)std::round(CS * SCALE / 2.0) : std::max(1, (int)std::round(2 * SCALE));
                     if (mk.w >= 1 && mk.h >= 1)
-                        g_pHyprOpenGL->renderRect(mk, E.enabled ? FGB : FG, {.round = mr, .roundingPower = 2.F});
+                        g_pHyprOpenGL->renderRect(ctx, mk, E.enabled ? FGB : FG, {.round = mr, .roundingPower = 2.F});
                 }
 
                 // label (bright when hovered)
@@ -1882,7 +1882,7 @@ namespace {
                     const double tx = ox + PAD_X + GUTTER;
                     const CBox   tb = {std::round(tx * SCALE), std::round((ry + (RH - t->m_size.y / SCALE) / 2.0) * SCALE), (double)t->m_size.x, (double)t->m_size.y};
                     if (tb.w >= 1 && tb.h >= 1)
-                        g_pHyprOpenGL->renderTexture(t, tb, {.a = E.enabled ? 1.F : 0.5F}); // dim disabled
+                        g_pHyprOpenGL->renderTexture(ctx, t, tb, {.a = E.enabled ? 1.F : 0.5F}); // dim disabled
                 }
 
                 // submenu arrow
@@ -1892,7 +1892,7 @@ namespace {
                         const double ax = ox + w - PAD_X - a->m_size.x / SCALE;
                         const CBox   ab = {std::round(ax * SCALE), std::round((ry + (RH - a->m_size.y / SCALE) / 2.0) * SCALE), (double)a->m_size.x, (double)a->m_size.y};
                         if (ab.w >= 1 && ab.h >= 1)
-                            g_pHyprOpenGL->renderTexture(a, ab, {.a = E.enabled ? 1.F : 0.5F});
+                            g_pHyprOpenGL->renderTexture(ctx, a, ab, {.a = E.enabled ? 1.F : 0.5F});
                     }
                 }
 

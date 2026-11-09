@@ -23,6 +23,6 @@ UP<IModule> makeNotificationsModule(const SModuleConfig&);
 UP<IModule> makeCustomModule(const SModuleConfig&);
 
 // Dispatch by module name: native names map to their factories; names declared
-// via hyprstatus-module (or unknown names carrying an `exec`/`format` option)
+// via hl.plugin.hyprstatus.module (or unknown names carrying an `exec`/`format` option)
 // become custom modules. Returns nullptr for unresolvable names.
 UP<IModule> createModuleByName(const SModuleConfig& cfg);

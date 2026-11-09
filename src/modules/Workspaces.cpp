@@ -1,19 +1,21 @@
 #define WLR_USE_UNSTABLE
 #include <hyprland/src/Compositor.hpp>
-#include <hyprland/src/desktop/Workspace.hpp>
+#include <hyprland/src/debug/log/Logger.hpp>
+#include <hyprland/src/desktop/state/FocusState.hpp>
 #include <hyprland/src/event/EventBus.hpp>
-// 0.56 moved CMonitor: helpers/Monitor.hpp -> output/Monitor.hpp
-#if __has_include(<hyprland/src/output/Monitor.hpp>)
-#include <hyprland/src/output/Monitor.hpp>
-#else
-#include <hyprland/src/helpers/Monitor.hpp>
-#endif
-#include <hyprland/src/managers/KeybindManager.hpp>
 #include <hyprland/src/managers/eventLoop/EventLoopManager.hpp>
+#include <hyprland/src/output/Monitor.hpp>
+#include <hyprland/src/config/shared/actions/ConfigActions.hpp>
+#include <hyprland/src/state/workspace/Resolver.hpp>
+#include <hyprland/src/state/workspace/State.hpp>
+#include <hyprland/src/workspace/HLWorkspace.hpp>
+#include <hyprland/src/workspace/WorkspaceUtils.hpp>
 
 #include <algorithm>
+#include <charconv>
+#include <limits>
+#include <optional>
 #include <string>
-#include <unordered_map>
 #include <vector>
 
 #include "../util/Format.hpp"
@@ -28,28 +30,23 @@ class CWorkspacesModule : public IModule {
 
     void init() override {
         auto& EV = Event::bus()->m_events;
-        m_listeners.push_back(EV.workspace.created.listen([this](const PHLWORKSPACEREF& ws) {
+        // createdLate: the workspace is fully set up (monitor, name) by then
+        m_listeners.push_back(EV.workspace.createdLate.listen([this](const PHLWORKSPACEREF& ws) {
             watchWorkspace(ws.lock());
             requestRedraw();
         }));
         m_listeners.push_back(EV.workspace.removed.listen([this](const PHLWORKSPACEREF&) {
-            // removed is emitted from ~CWorkspace, where the payload's weak ref
-            // can no longer lock() (hyprutils sets destroying() first) — so the
-            // id is unreadable here. Sweep expired watches instead; leaving one
-            // behind would make watchWorkspace skip a later workspace that
-            // reuses the id (specials reuse their negative ids every toggle).
-            std::erase_if(m_wsWatches, [](const auto& P) { return P.second.ws.expired(); });
+            // emitted mid-destruction, so the ref may already be unlockable:
+            // sweep every expired watch rather than looking this one up
+            std::erase_if(m_wsWatches, [](const SWorkspaceWatch& W) { return W.ws.expired(); });
             requestRedraw();
         }));
+        // 0.57 finally has bus events for renames and special open/close/steal
+        // (the latter repaints both monitors: requestRedraw damages every bar
+        // and segments() reads m_activeSpecialWorkspace live)
+        m_listeners.push_back(EV.workspace.renamed.listen([this] { requestRedraw(); }));
         m_listeners.push_back(EV.workspace.active.listen([this] { requestRedraw(); }));
-#ifdef HS_HYPRLAND_056
-        // special open/close/steal has a dedicated bus event on 0.56 — the
-        // special-active flip renders the same frame it happens. (On a steal
-        // only ONE event fires for the gaining monitor, but requestRedraw
-        // damages every bar and segments() reads m_activeSpecialWorkspace
-        // live, so the losing monitor repaints correctly too.)
-        m_listeners.push_back(EV.workspace.specialActive.listen([this](PHLWORKSPACE, PHLMONITOR) { requestRedraw(); }));
-#endif
+        m_listeners.push_back(EV.workspace.specialActive.listen([this] { requestRedraw(); }));
         m_listeners.push_back(EV.workspace.moveToMonitor.listen([this] { requestRedraw(); }));
         m_listeners.push_back(EV.window.moveToWorkspace.listen([this] { requestRedraw(); }));
         m_listeners.push_back(EV.window.urgent.listen([this] { requestRedraw(); }));
@@ -57,11 +54,6 @@ class CWorkspacesModule : public IModule {
         m_listeners.push_back(EV.window.close.listen([this] { requestRedraw(); }));
         m_listeners.push_back(EV.monitor.focused.listen([this] { requestRedraw(); }));
 
-        // Workspace renames have NO bus event; only the per-object
-        // CWorkspace::m_events.renamed signal fires. Watch every live
-        // workspace now, and each newly created one above, so the bar
-        // redraws after `hyprctl dispatch renameworkspace ...`. (On 0.55
-        // the same watch also covers special toggles — see watchWorkspace.)
         for (const auto& WS : Compat::workspacesCopy())
             watchWorkspace(WS);
     }
@@ -70,65 +62,84 @@ class CWorkspacesModule : public IModule {
         if (!mon)
             return {};
 
-        const auto FORMAT      = opt("format", "{name}");
-        const bool SHOWSPECIAL = optBool("show-special", false);
+        const auto FORMAT        = opt("format", "{name}");
+        const bool SHOWSPECIAL   = optBool("show-special", false);
+        const auto ACTIVE        = mon->m_activeWorkspace;
+        const auto ACTIVESPECIAL = mon->m_activeSpecialWorkspace; // null = none open here
 
-        // the special workspace currently open on THIS monitor (both versions
-        // expose CMonitor::m_activeSpecialWorkspace); null = none
-        const auto ACTIVESPECIAL = mon->m_activeSpecialWorkspace;
-
+        // Workspace IDs are no longer signed integers (0.57): a workspace is
+        // numbered (uint32), named (type NORMAL but NO number — createNamed uses
+        // the special-ID variant), or special. Branch on type(), never on
+        // whether a number is present, or named workspaces get treated as special.
         struct SEntry {
-            WORKSPACEID id      = 0;
-            std::string name;
-            bool        special = false;
-            bool        urgent  = false;
-            bool        virt    = false; // persistent id with no live workspace
+            PHLWORKSPACE            ws; // null for a persistent id with no live workspace
+            std::optional<uint32_t> num;
+            std::string             label; // {name}
+            std::string             ref;   // click target, see dispatchFor()
+            bool                    special = false;
+            bool                    urgent  = false;
         };
         std::vector<SEntry> entries;
 
         for (const auto& WS : Compat::workspacesCopy()) {
-            if (!WS || WS->inert())
+            if (!WS || WS->monitorID() != mon->m_id)
                 continue;
-            if (WS->monitorID() != mon->m_id)
-                continue;
+            const bool SPECIAL = WS->type() == Workspace::eWorkspaceType::SPECIAL;
             // an ACTIVE special is always shown, even with show-special=false:
             // the whole point of the indicator is seeing that one is open
-            if (WS->m_isSpecialWorkspace && !SHOWSPECIAL && WS != ACTIVESPECIAL)
+            if (SPECIAL && !SHOWSPECIAL && WS != ACTIVESPECIAL)
                 continue;
-            entries.push_back({WS->m_id, WS->m_name, WS->m_isSpecialWorkspace, WS->hasUrgentWindow(), false});
+
+            SEntry e{.ws = WS, .num = WS->numberedID(), .special = SPECIAL, .urgent = WS->hasUrgentWindow()};
+            if (SPECIAL) {
+                // addressableName is always "special:<n>" ("special:special" for
+                // the unnamed one); show it as before, toggle by the bare name
+                e.label = WS->addressableName();
+                e.ref   = "s:" + e.label.substr(e.label.starts_with("special:") ? 8 : 0);
+            } else if (e.num) {
+                e.label = WS->displayName();
+                e.ref   = "n:" + std::to_string(*e.num);
+            } else {
+                e.label = WS->displayName();
+                e.ref   = "w:" + WS->addressableName();
+            }
+            entries.push_back(std::move(e));
         }
 
         for (const auto ID : persistentIDs(mon)) {
-            if (std::ranges::any_of(entries, [ID](const SEntry& e) { return e.id == ID; }))
+            if (std::ranges::any_of(entries, [ID](const SEntry& e) { return e.num == ID; }))
                 continue;
-            entries.push_back({ID, std::to_string(ID), false, false, true});
+            entries.push_back({.ws = nullptr, .num = ID, .label = std::to_string(ID), .ref = "n:" + std::to_string(ID)});
         }
 
-        // ascending by id, named workspaces (id < 0, non-special) last
-        std::ranges::sort(entries, [](const SEntry& a, const SEntry& b) {
-            const bool ANAMED = a.id < 0 && !a.special;
-            const bool BNAMED = b.id < 0 && !b.special;
-            if (ANAMED != BNAMED)
-                return BNAMED;
-            return a.id < b.id;
+        // specials first (where their negative ids used to sort them), then
+        // numbered ascending, then named workspaces last
+        std::ranges::stable_sort(entries, [](const SEntry& a, const SEntry& b) {
+            const auto RANK = [](const SEntry& e) { return e.special ? 0 : e.num ? 1 : 2; };
+            if (RANK(a) != RANK(b))
+                return RANK(a) < RANK(b);
+            if (a.num && b.num)
+                return *a.num < *b.num;
+            // named / special: keep workspacesCopy() order (creation order). The
+            // old module sorted them by their creation-time negative id, so a
+            // rename never moved a button; comparing labels would.
+            return false;
         });
-
-        const auto ACTIVEID = mon->activeWorkspaceID();
 
         std::vector<SSegment> out;
         out.reserve(entries.size());
         for (const auto& E : entries) {
             SSegment seg;
-            seg.text      = Fmt::replaceTokens(FORMAT, {{"id", std::to_string(E.id)}, {"name", E.name}});
+            seg.text      = Fmt::replaceTokens(FORMAT, {{"id", E.num ? std::to_string(*E.num) : E.label}, {"name", E.label}});
             seg.hoverable = true;
-            seg.id        = (size_t)(int64_t)E.id;
-            if (E.special && ACTIVESPECIAL && E.id == ACTIVESPECIAL->m_id)
+            seg.ref       = E.ref;
+            if (E.special && E.ws && E.ws == ACTIVESPECIAL)
                 seg.cls = "special-active";
-            else if (E.id == ACTIVEID)
+            else if (E.ws && E.ws == ACTIVE)
                 seg.cls = "active";
             else if (E.urgent)
                 seg.cls = "urgent";
-            else if (E.virt)
+            else if (!E.ws)
                 seg.cls = "persistent";
             out.push_back(std::move(seg));
         }
@@ -136,33 +147,37 @@ class CWorkspacesModule : public IModule {
     }
 
     void onClick(uint32_t /*button*/, const SSegment& seg, PHLMONITOR) override {
-        // Absolute switch to the CLICKED workspace. seg.id carries the signed
-        // workspace id (round-tripped through size_t). A bare negative number
-        // is parsed as a RELATIVE jump by the `workspace` dispatcher, so named
-        // (id < 0) and special workspaces must be dispatched by name.
-        const WORKSPACEID ID = (int64_t)seg.id;
-        if (const auto WS = Compat::workspaceByID(ID); WS && !WS->inert()) {
-            if (WS->m_isSpecialWorkspace) {
-                // togglespecialworkspace prepends "special:"; m_name is
-                // "special:<n>" (or "special:special" for the default).
-                std::string name = WS->m_name;
-                if (name.starts_with("special:"))
-                    name = name.substr(8);
-                dispatchWorkspace("togglespecialworkspace", name);
-                return;
-            }
-            if (ID < 0) {
-                dispatchWorkspace("workspace", "name:" + WS->m_name);
-                return;
-            }
-        }
-        // live numbered workspace or persistent (not-yet-created) positive id
-        dispatchWorkspace("workspace", std::to_string(ID));
+        // Absolute switch to the CLICKED workspace. A persistent id with no live
+        // workspace yet is created exactly as SUPER+N would create it.
+        const auto& R = seg.ref;
+        if (R.size() < 3 || R[1] != ':')
+            return;
+        const auto ARG = R.substr(2);
+        if (R[0] == 'n') {
+            uint32_t   n = 0;
+            const auto [PTR, EC] = std::from_chars(ARG.data(), ARG.data() + ARG.size(), n);
+            if (EC == std::errc{} && PTR == ARG.data() + ARG.size() && n > 0)
+                switchTo(std::to_string(n));
+        } else if (R[0] == 'w')
+            switchTo("name:" + ARG);
+        else if (R[0] == 's')
+            toggleSpecial(ARG);
     }
 
     void onScroll(double delta, const SSegment&, PHLMONITOR) override {
-        // relative step is the intended scroll behavior
-        dispatchWorkspace("workspace", delta < 0 ? "-1" : "+1");
+        // Relative step, as before: "+1"/"-1" is the active workspace's NUMBER
+        // plus one. 0.57 named workspaces have no number, and the resolver then
+        // rejects a plain relative selector ("Relative workspace on no numbered
+        // workspace!"), so scrolling the bar on a named workspace silently did
+        // nothing. Fall back to "r+1" there — Hyprland's open-workspace walk,
+        // which works from any workspace. Numbered workspaces keep exact 0.56
+        // behaviour ("r" also skips workspaces held by other monitors, which
+        // would change multi-monitor scrolling). Checked against the focused
+        // monitor because that is the resolver's default base.
+        const auto FOCUSED  = Desktop::focusState()->monitor();
+        const bool NUMBERED = FOCUSED && FOCUSED->m_activeWorkspace && FOCUSED->m_activeWorkspace->numberedID();
+        const auto STEP     = std::string{NUMBERED ? "" : "r"} + (delta < 0 ? "-1" : "+1");
+        switchTo(STEP);
     }
 
   private:
@@ -172,75 +187,77 @@ class CWorkspacesModule : public IModule {
     // destroyed at PLUGIN_EXIT -- otherwise it would run unmapped .so code
     // after dlclose and crash the session. One pending dispatch suffices;
     // reassigning m_dispatchLater cancels any previous one (last click wins).
-    void dispatchWorkspace(const std::string& dispatcher, const std::string& arg) {
-        m_dispatchLater = g_pEventLoopManager->doLaterLock([dispatcher, arg] {
-            if (!g_pKeybindManager)
-                return;
-            const auto IT = g_pKeybindManager->m_dispatchers.find(dispatcher);
-            if (IT != g_pKeybindManager->m_dispatchers.end())
-                IT->second(arg);
+    //
+    // 0.57 has no C++ dispatcher table, but the Lua dispatchers are thin
+    // wrappers over Config::Actions: hl.dsp.focus({ workspace = S }) IS
+    // Config::Actions::changeWorkspace(S). Call that directly. Going through
+    // `hyprctl dispatch` instead runs a Lua eval, and CConfigManager::eval clears
+    // the stored config errors -- every bar click would silently empty
+    // `hyprctl configerrors` while the config was still broken.
+    void switchTo(std::string selector) {
+        m_dispatchLater = g_pEventLoopManager->doLaterLock([SEL = std::move(selector)] {
+            if (const auto RES = Config::Actions::changeWorkspace(SEL); !RES)
+                LOG(Log::ERR, "[hyprstatus] workspaces: switch to `{}` failed: {}", SEL, RES.error().message);
         });
     }
 
-    // Per-object CWorkspace signal subscriptions (things with no bus event).
-    // Idempotent per workspace id; entries die with the workspace (removed
-    // handler) or with the module.
-    void watchWorkspace(const PHLWORKSPACE& ws) {
-        if (!ws || ws->inert())
-            return;
-        if (const auto IT = m_wsWatches.find(ws->m_id); IT != m_wsWatches.end()) {
-            if (IT->second.ws.lock() == ws)
-                return;          // already watching this exact object
-            m_wsWatches.erase(IT); // stale watch from a reused id — resubscribe
-        }
-        auto& W   = m_wsWatches[ws->m_id];
-        W.ws      = ws;
-        W.renamed = ws->m_events.renamed.listen([this] { requestRedraw(); });
-#ifndef HS_HYPRLAND_056
-        // 0.55.4's CMonitor::setSpecialWorkspace emits NO bus event at all
-        // (workspace.active only fires in changeWorkspace; specialActive does
-        // not exist yet). The only in-process notifications are the per-object
-        // signals on the special workspace itself: activeChanged on open /
-        // close / replace, monitorChanged when another monitor steals a
-        // visible special. Watch both so the special-active flip repaints
-        // without waiting for an unrelated redraw. 0.56 uses the gated
-        // workspace.specialActive bus listener in init() instead.
-        if (ws->m_isSpecialWorkspace) {
-            W.activeChanged  = ws->m_events.activeChanged.listen([this] { requestRedraw(); });
-            W.monitorChanged = ws->m_events.monitorChanged.listen([this] { requestRedraw(); });
-        }
-#endif
+    // Same steps as Hyprland's own hl.dsp.workspace.toggle_special (v0.57.2
+    // LuaBindingsDispatchers.cpp dsp_toggleSpecial): resolve the special by its
+    // bare name, create it on the focused monitor if it does not exist yet,
+    // toggle, then ready() the workspace.
+    void toggleSpecial(std::string name) {
+        m_dispatchLater = g_pEventLoopManager->doLaterLock([NAME = std::move(name)] {
+            const auto TARGET = State::Workspace::resolver()->getWorkspaceTargetFromString(Workspace::specialWorkspaceAddressFromName(NAME));
+            if (!TARGET.valid() || TARGET.type != Workspace::eWorkspaceType::SPECIAL) {
+                LOG(Log::ERR, "[hyprstatus] workspaces: `{}` is not a valid special workspace", NAME);
+                return;
+            }
+            auto ws = State::Workspace::state()->find(TARGET);
+            if (!ws) {
+                if (const auto MON = Desktop::focusState()->monitor())
+                    ws = State::Workspace::state()->create(TARGET, MON);
+            }
+            if (!ws)
+                return;
+            if (const auto RES = Config::Actions::toggleSpecial(ws); !RES)
+                LOG(Log::ERR, "[hyprstatus] workspaces: toggling special `{}` failed: {}", NAME, RES.error().message);
+            ws->ready();
+        });
     }
 
-    std::vector<WORKSPACEID> persistentIDs(const PHLMONITOR& mon) const {
+    // Per-object CHLWorkspace signals with no bus equivalent: idChanged
+    // (hl.dsp.workspace.change_id relabels a numbered workspace in place).
+    void watchWorkspace(const PHLWORKSPACE& ws) {
+        if (!ws)
+            return;
+        if (std::ranges::any_of(m_wsWatches, [&ws](const SWorkspaceWatch& W) { return W.ws.lock() == ws; }))
+            return;
+        m_wsWatches.push_back({.ws = ws, .idChanged = ws->m_events.idChanged.listen([this] { requestRedraw(); })});
+    }
+
+    // positive integers only: numbered workspaces are uint32 and 0 is invalid
+    std::vector<uint32_t> persistentIDs(const PHLMONITOR& mon) const {
         auto list = opt("persistent");
         if (const auto OVERRIDE = opt("persistent." + mon->m_name); !OVERRIDE.empty())
             list = OVERRIDE;
 
-        std::vector<WORKSPACEID> ids;
+        std::vector<uint32_t> ids;
         for (const auto& TOK : Fmt::split(list, ' ')) {
             const auto T = Fmt::trim(TOK);
-            if (T.empty())
-                continue;
-            try {
-                ids.push_back(std::stoll(T));
-            } catch (...) {}
+            if (const auto V = Fmt::toLL(T); V && *V > 0 && *V <= (long long)std::numeric_limits<uint32_t>::max())
+                ids.push_back((uint32_t)*V);
         }
         return ids;
     }
 
     struct SWorkspaceWatch {
-        PHLWORKSPACEREF     ws; // identity + liveness: expired => sweep; object mismatch on a reused id => resubscribe
-        CHyprSignalListener renamed;
-#ifndef HS_HYPRLAND_056
-        CHyprSignalListener activeChanged;  // 0.55 only: special toggled on/off (no bus event)
-        CHyprSignalListener monitorChanged; // 0.55 only: special stolen by another monitor
-#endif
+        PHLWORKSPACEREF     ws; // identity + liveness: expired => swept on workspace.removed
+        CHyprSignalListener idChanged;
     };
 
-    std::vector<CHyprSignalListener>                     m_listeners;
-    std::unordered_map<WORKSPACEID, SWorkspaceWatch>     m_wsWatches;     // per-workspace object-signal hooks
-    UP<SEventLoopDoLaterLock>                            m_dispatchLater; // RAII-cancelled pending dispatch
+    std::vector<CHyprSignalListener> m_listeners;
+    std::vector<SWorkspaceWatch>     m_wsWatches;
+    UP<SEventLoopDoLaterLock>        m_dispatchLater; // RAII-cancelled pending dispatch
 };
 
 } // namespace

@@ -10,6 +10,11 @@ authors = ["Tecknich"]
 commit_pins = [
     # Hyprland 0.55.4 -> last hyprstatus commit developed+daily-driven on it
     ["a0136d8c04687bb36eb8a28eb9d1ff92aea99704", "7a0ba0b5bb042a90b2a0539b0974565286783e97"],
+    # Hyprland 0.56.x -> last commit daily-driven on 0.56.2 (PR #26). 0.56.0-0.56.2
+    # are source-compatible; main requires 0.57 headers and #errors on older ones.
+    ["36b2e0cfe0c6094dbc47bd42a437431315bb3087", "001ed5a040c983a09e6e2d55b5287fe9056dcaea"], # v0.56.0
+    ["5c9377c15f85c50648f35ca5a213754f95b93ca0", "001ed5a040c983a09e6e2d55b5287fe9056dcaea"], # v0.56.1
+    ["efb50993780079460b0cbed1363e2166a2de1d9f", "001ed5a040c983a09e6e2d55b5287fe9056dcaea"], # v0.56.2
 ]
 
 [hyprstatus]

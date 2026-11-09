@@ -10,6 +10,10 @@
 
 #include "../config/ModuleConfig.hpp"
 
+namespace Render {
+    class CRenderContext;
+}
+
 // One visual unit inside a module. Most modules render a single text segment;
 // workspaces render one per workspace button, tray one icon per item.
 struct SSegment {
@@ -19,6 +23,7 @@ struct SSegment {
     std::string               cls;          // style class -> color resolution (active, warning, ...)
     std::string               tooltip;      // per-segment tooltip ("" -> module-level tooltip)
     size_t                    id    = 0;    // click identity (workspace id, tray index, ...)
+    std::string               ref;          // string click identity where a number can't carry it (workspace selector)
     bool                      bold  = false;
     bool                      hoverable = false; // gets col.foreground_bright on hover (workspaces)
 };
@@ -31,7 +36,7 @@ class IModule {
     // start timers / listeners / services. Called once after construction on
     // the main thread. Config is fully parsed at this point.
     virtual void init() {}
-    // forced data refresh (dispatcher `hyprstatus:refresh`, RT signal, poll tick)
+    // forced data refresh (hl.plugin.hyprstatus.refresh, RT signal, poll tick)
     virtual void update() {}
 
     // Current render model for a given monitor (main thread, may be called
@@ -70,7 +75,7 @@ class IModule {
     virtual bool          popupOpen() const { return false; }
     virtual PHLMONITORREF popupMonitor() const { return {}; }
     // called inside a pass element at RENDER_LAST_MOMENT with GL current
-    virtual void drawPopup(PHLMONITOR mon) {}
+    virtual void drawPopup(Render::CRenderContext& ctx, PHLMONITOR mon) {}
     // true = the click was inside the popup and was consumed
     virtual bool popupHandleButton(uint32_t button, const Vector2D& global) { return false; }
     virtual void popupHandleMotion(const Vector2D& global) {}

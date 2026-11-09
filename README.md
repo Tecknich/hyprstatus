@@ -26,10 +26,10 @@
 |---|---|---|
 | process | separate GTK client | inside Hyprland |
 | hyprland state (workspaces, titles, submaps) | polled/streamed over IPC sockets | read directly from compositor memory, updated by compositor events the same frame |
-| config | JSONC + GTK CSS, own reload | `hyprland.conf` (`plugin:hyprstatus:*`), atomically re-themed by `hyprctl reload` |
+| config | JSONC + GTK CSS, own reload | your Hyprland Lua config (`plugin.hyprstatus.*`), atomically re-themed by `hyprctl reload` |
 | rendering | GTK, own damage | Hyprland's GL render pass + damage tracking — costs nothing while nothing changes; native blur |
 | clicks | layer-shell surface | consumed pre-keybind by the compositor; workspace clicks call dispatchers directly |
-| control | signals / waybar-msg | `hyprctl dispatch hyprstatus:toggle`, `hyprstatus:refresh [module]`, `hyprctl hyprstatus` (JSON state) |
+| control | signals / waybar-msg | `hl.plugin.hyprstatus.toggle()`, `.refresh([module])` from binds or `hyprctl eval`, `hyprctl hyprstatus` (JSON state) |
 
 ## Install
 
@@ -39,7 +39,8 @@ hyprpm enable hyprstatus
 hyprpm reload
 ```
 
-Add `exec-once = hyprpm reload -n` to `hyprland.conf` so it loads on start.
+Load it at login from your Lua autostart:
+`hl.on("hyprland.start", function() hl.exec_cmd("hyprpm reload -n") end)`.
 Build deps beyond Hyprland headers: `pangocairo`, `libpulse`, `libsystemd`
 (sd-bus), `librsvg`, `cairo` — all present on any Arch/Hyprland box.
 
@@ -57,34 +58,45 @@ For development: `cmake -B build -S . && cmake --build build` then
 
 ## Configure
 
-Everything lives in `hyprland.conf`. See [`example/hyprstatus.conf`](example/hyprstatus.conf)
-for a full setup (floating themed bar, custom script modules, tray).
+Hyprland 0.57 configures plugins only through Lua, so everything lives in your
+`hyprland.lua`. See [`example/hyprstatus.lua`](example/hyprstatus.lua) for a full
+setup (floating themed bar, custom script modules, tray). Configs for older
+Hyprland releases (`hyprland.conf` + `hyprstatus-set` keywords) are in the
+[`v1.1.0`](https://github.com/Tecknich/hyprstatus/tree/v1.1.0) tree.
 
-```ini
-plugin {
-    hyprstatus {
-        height = 38
-        margin = 4
-        rounding = 6
-        font_family = JetBrainsMono Nerd Font
-        font_size = 13
-        modules_left = workspaces window
-        modules_center = clock
-        modules_right = tray network pulseaudio battery
-        col.background = rgba(06051aa6)
-        col.accent = rgba(ff6ec7ff)
-        # col.foreground, col.border, col.ok, col.warn, col.err, ...
-    }
-}
+Plugins load *after* your config first runs, and Hyprland re-runs it once a
+plugin is in. An unknown plugin key is a config error on that first pass, so
+guard the block on a sentinel key:
+
+```lua
+local function plugin_config_ready(sentinel)
+  if not hl.get_config then return false end
+  local _, err = hl.get_config(sentinel)
+  return err == nil
+end
+
+if plugin_config_ready("plugin.hyprstatus.enabled") then
+  hl.config({ plugin = { hyprstatus = {
+    height = 38, margin = 4, rounding = 6,
+    font_family = "JetBrainsMono Nerd Font", font_size = 13,
+    modules_left = "workspaces window",
+    modules_center = "clock",
+    modules_right = "tray network pulseaudio battery",
+    col = { background = "rgba(06051aa6)", accent = "rgba(ff6ec7ff)" },
+    -- col.foreground, col.border, col.ok, col.warn, col.err, ...
+  } } })
+end
 ```
 
-Per-module options use Waybar's option names, one per line, commas in values
-allowed (only the first two commas split):
+Per-module options use Waybar's option names. `set(module, key, value)` takes
+three plain strings, so commas, quotes and real newlines in a value need no
+escaping:
 
-```ini
-hyprstatus-set = clock, format, %a, %b %d   %I:%M %p
-hyprstatus-set = battery, states.warning, 20
-hyprstatus-set = network, on-click-right, pypr toggle nmtui   # pyprland dropdown
+```lua
+local set, module = hl.plugin.hyprstatus.set, hl.plugin.hyprstatus.module
+set("clock", "format", "%a, %b %d   %I:%M %p")
+set("battery", "states.warning", "20")
+set("network", "on-click-right", "pypr toggle nmtui")   -- pyprland dropdown
 ```
 
 Custom script modules are Waybar-compatible (`return-type json` with
@@ -92,17 +104,26 @@ Custom script modules are Waybar-compatible (`return-type json` with
 mode when `interval` is omitted, `signal N`, `max-length`, click/scroll
 actions):
 
-```ini
-hyprstatus-module = nowplaying
-hyprstatus-set = nowplaying, exec, ~/.config/scripts/nowplaying.sh
-hyprstatus-set = nowplaying, return-type, json
-hyprstatus-set = nowplaying, interval, 2
-hyprstatus-set = nowplaying, on-click, playerctl play-pause
+```lua
+module("nowplaying")
+set("nowplaying", "exec", "~/.config/scripts/nowplaying.sh")
+set("nowplaying", "return-type", "json")
+set("nowplaying", "interval", "2")
+set("nowplaying", "on-click", "playerctl play-pause")
 ```
 
-To refresh a module instantly from a script (Waybar's `pkill -RTMIN+N waybar`):
-either `pkill -RTMIN+9 Hyprland` with `hyprstatus-set = mymod, signal, 9`, or
-`hyprctl dispatch hyprstatus:refresh mymod`.
+Toggle the bar or refresh a module (Waybar's `pkill -RTMIN+N waybar`) through the
+plugin's Lua functions — Hyprland 0.57 removed plugin dispatchers, so the old
+`hyprctl dispatch hyprstatus:*` forms no longer exist:
+
+```lua
+hl.bind("SUPER + B", function() hl.plugin.hyprstatus.toggle() end)
+```
+
+```sh
+hyprctl eval 'hl.plugin.hyprstatus.refresh("mymod")'   # no argument = every module
+pkill -RTMIN+9 Hyprland                                 # with set("mymod", "signal", "9")
+```
 
 ## Modules
 
@@ -134,9 +155,9 @@ On Hyprland >= 0.56, hyprstatus listens for the `gloview:overview` custom bus
 event published by the [gloview](https://github.com/Tecknich/gloview) overview
 plugin: while an overview is open on a monitor, that monitor's bar hides —
 exactly like `hide_on_fullscreen` — and reappears when the overview closes.
-Controlled by `plugin:hyprstatus:hide_on_overview` (default on). Load order
+Controlled by `plugin.hyprstatus.hide_on_overview` (default on). Load order
 does not matter and gloview is optional: without it the event simply never
-fires. On 0.55 the option is accepted but inert.
+fires.
 
 ## Known limitations
 
@@ -160,9 +181,13 @@ Open an issue with your `hyprctl version` if a build breaks.
 
 | Hyprland | hyprstatus | status |
 |---|---|---|
-| 0.56.2 | `main` (HEAD) | developed + daily-driven on this; CI builds against Arch's 0.56.2 |
-| 0.56.0 / 0.56.1 | `main` (HEAD) | source-compatible (`main` verified against v0.56.0 headers; no API drift within 0.56.x) |
+| 0.57.2 | `main` (HEAD) | developed + verified on this; CI builds against Arch's 0.57.2. Lua config only |
+| 0.56.0 – 0.56.2 | pinned (`commit_pins`) | previously daily-driven; frozen at the last 0.56.2-verified commit (`001ed5a`) |
 | 0.55.4 | pinned (`commit_pins`) | previously daily-driven; frozen at the last 0.55.4-verified commit |
+
+`main` refuses to build against anything older than 0.57 (0.57 replaced the
+render, workspace, keybind and config-provider APIs wholesale), so hyprpm on an
+older Hyprland always picks the pin.
 
 CI ([`.github/workflows/build.yml`](.github/workflows/build.yml)) builds against
 the Hyprland headers Arch ships, on every push/PR and weekly, so upstream API

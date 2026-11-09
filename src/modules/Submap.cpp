@@ -1,6 +1,6 @@
 #define WLR_USE_UNSTABLE
 #include <hyprland/src/event/EventBus.hpp>
-#include <hyprland/src/managers/KeybindManager.hpp>
+#include <hyprland/src/keybinds/Manager.hpp>
 
 #include <string>
 #include <vector>
@@ -42,8 +42,8 @@ class CSubmapModule : public IModule {
 
   private:
     void readCurrentSubmap() {
-        if (g_pKeybindManager)
-            m_submap = g_pKeybindManager->getCurrentSubmap().name;
+        if (Keybinds::mgr())
+            m_submap = std::string{Keybinds::mgr()->currentSubmap()};
     }
 
     std::string         m_submap;

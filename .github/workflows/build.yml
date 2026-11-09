@@ -21,7 +21,7 @@ jobs:
         run: |
           pacman -Syu --noconfirm --needed \
             base-devel cmake git pkgconf gcc \
-            hyprland \
+            hyprland lua \
             pango cairo librsvg libpulse systemd-libs \
             pixman libdrm wayland libxkbcommon
 
